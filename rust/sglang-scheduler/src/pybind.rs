@@ -34,20 +34,18 @@
 //!   - `("stash_row_write", pool_idx, start, [indices, ...])`
 //!   - `("finished", core_idx, reason, out_len)`
 
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
-use pyo3::IntoPyObjectExt;
 
-use sglang_radix::{EvictionPolicy, RadixKey, ROOT};
+use sglang_radix::{EvictionPolicy, ROOT, RadixKey};
 
 use crate::core::{Event, IngressReq, KvRow, ResultRow, SchedulerCore as EngineCore};
-use crate::unified::UnifiedRadixTreePy;
 use crate::ntr::Ntr;
 use crate::planner::plan_next_batch as engine_plan;
-use crate::types::{
-    AdmitReq, BatchPlan, Config, PlanReq, Policy, StepEnv, CHUNKED_IDX,
-};
+use crate::types::{AdmitReq, BatchPlan, CHUNKED_IDX, Config, PlanReq, Policy, StepEnv};
+use crate::unified::UnifiedRadixTreePy;
 
 // ---------------------------------------------------------------- inputs
 
@@ -111,9 +109,7 @@ impl InCfg {
             mixed_chunk: self.mixed_chunk.unwrap_or(false),
             priority_scheduling: self.priority_scheduling.unwrap_or(false),
             low_priority_values_first: self.low_priority_values_first.unwrap_or(false),
-            clip_max_new_tokens: self
-                .clip_max_new_tokens
-                .unwrap_or(d.clip_max_new_tokens),
+            clip_max_new_tokens: self.clip_max_new_tokens.unwrap_or(d.clip_max_new_tokens),
             in_batch_check_threshold: self
                 .in_batch_check_threshold
                 .unwrap_or(d.in_batch_check_threshold),
@@ -131,9 +127,7 @@ impl InCfg {
                 .unwrap_or(d.schedule_conservativeness),
             ntr_min_factor: self.ntr_min_factor.unwrap_or(d.ntr_min_factor),
             ntr_decay_steps: self.ntr_decay_steps.unwrap_or(d.ntr_decay_steps),
-            retract_decode_steps: self
-                .retract_decode_steps
-                .unwrap_or(d.retract_decode_steps),
+            retract_decode_steps: self.retract_decode_steps.unwrap_or(d.retract_decode_steps),
         })
     }
 }
@@ -240,6 +234,20 @@ struct InIngress {
     ignore_eos: Option<bool>,
 }
 
+/// Spec-v2 row metadata (plan §9). Python settles the counters with the
+/// pre-step state; `settled` captures that gate.
+#[derive(FromPyObject)]
+struct InResultSpec {
+    #[pyo3(item)]
+    accept_len: u32,
+    #[pyo3(item)]
+    settled: bool,
+    #[pyo3(item)]
+    block_accept_len: Option<u32>,
+    #[pyo3(item)]
+    cap_len: Option<u32>,
+}
+
 #[derive(FromPyObject)]
 struct InResultRow {
     #[pyo3(item)]
@@ -248,6 +256,8 @@ struct InResultRow {
     finished: bool,
     #[pyo3(item)]
     finish_reason: Option<u32>,
+    #[pyo3(item)]
+    spec: Option<InResultSpec>,
 }
 
 #[derive(FromPyObject)]
@@ -279,6 +289,10 @@ fn u32_list(py: Python<'_>, v: &[u32]) -> PyResult<Py<PyAny>> {
 
 fn int_list(py: Python<'_>, v: &[i64]) -> PyResult<Py<PyAny>> {
     PyList::new(py, v.iter().copied())?.into_py_any(py)
+}
+
+fn u64_list(py: Python<'_>, v: &[u64]) -> PyResult<Py<PyAny>> {
+    PyList::new(py, v.iter().map(|x| *x as i64))?.into_py_any(py)
 }
 
 /// `BatchPlan` → `(mode, batch_is_full, prefill, decode)`.
@@ -341,10 +355,7 @@ fn event_to_py(ev: &Event, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 .collect::<PyResult<Vec<_>>>()?;
             PyTuple::new(
                 py,
-                vec![
-                    "evict".to_string().into_py_any(py)?,
-                    runs.into_py_any(py)?,
-                ],
+                vec!["evict".to_string().into_py_any(py)?, runs.into_py_any(py)?],
             )?
             .into_py_any(py)
         }
@@ -625,16 +636,14 @@ impl SWARadixTree {
         values: Vec<i64>,
         update_kv_after_len: u32,
         swa_evicted_seqlen: u32,
-    ) -> PyResult<
-        (
-            u32,
-            u32,
-            Vec<Vec<i64>>,
-            Vec<Vec<i64>>,
-            Vec<Vec<i64>>,
-            Vec<(Vec<i64>, Vec<i64>)>,
-        ),
-    > {
+    ) -> PyResult<(
+        u32,
+        u32,
+        Vec<Vec<i64>>,
+        Vec<Vec<i64>>,
+        Vec<Vec<i64>>,
+        Vec<(Vec<i64>, Vec<i64>)>,
+    )> {
         let r = py.detach(|| {
             let key = RadixKey::new(&keys);
             self.tree.insert(
@@ -668,8 +677,7 @@ impl SWARadixTree {
         full_tokens: u32,
         swa_tokens: u32,
     ) -> PyResult<(u32, u32, Vec<Vec<i64>>, Vec<Vec<i64>>, Vec<Vec<i64>>)> {
-        let r =
-            py.detach(|| self.tree.evict(full_tokens as usize, swa_tokens as usize));
+        let r = py.detach(|| self.tree.evict(full_tokens as usize, swa_tokens as usize));
         Ok((
             u32::try_from(r.full_num_evicted).unwrap_or(u32::MAX),
             u32::try_from(r.swa_num_evicted).unwrap_or(u32::MAX),
@@ -685,12 +693,7 @@ impl SWARadixTree {
     }
 
     /// `dec_lock_ref(node, swa_uuid_or_none, skip_swa)` → full-side delta.
-    fn dec_lock_ref(
-        &mut self,
-        node: u32,
-        swa_uuid: Option<u64>,
-        skip_swa: bool,
-    ) -> i64 {
+    fn dec_lock_ref(&mut self, node: u32, swa_uuid: Option<u64>, skip_swa: bool) -> i64 {
         self.tree.dec_lock_ref(node, swa_uuid, skip_swa)
     }
 
@@ -791,22 +794,11 @@ impl MambaRadixTree {
         values: Vec<i64>,
         mamba_values: Vec<i64>,
         prev_prefix_len: u32,
-    ) -> PyResult<(
-        u32,
-        u32,
-        bool,
-        Vec<Vec<i64>>,
-        Vec<u32>,
-        Vec<Vec<i64>>,
-    )> {
+    ) -> PyResult<(u32, u32, bool, Vec<Vec<i64>>, Vec<u32>, Vec<Vec<i64>>)> {
         let r = py.detach(|| {
             let key = RadixKey::new(&keys);
-            self.tree.insert(
-                &key,
-                &values,
-                &mamba_values,
-                prev_prefix_len as usize,
-            )
+            self.tree
+                .insert(&key, &values, &mamba_values, prev_prefix_len as usize)
         });
         let (kv_runs, kv_start_pos) = r
             .free
@@ -926,8 +918,7 @@ impl HiRadixTree {
         load_back_threshold: u32,
     ) -> PyResult<Self> {
         let policy = sglang_radix::HiPolicy::parse(write_policy).map_err(PyValueError::new_err)?;
-        let strategy =
-            EvictionPolicy::parse(eviction_policy).map_err(PyValueError::new_err)?;
+        let strategy = EvictionPolicy::parse(eviction_policy).map_err(PyValueError::new_err)?;
         Ok(Self {
             tree: sglang_radix::HiRadixTree::new(
                 page_size as usize,
@@ -1041,14 +1032,9 @@ impl HiRadixTree {
         last_node: u32,
         mem_quota: Option<i64>,
     ) -> Option<(u32, u32, Vec<u32>, Vec<i64>)> {
-        self.tree.init_load_back(last_node, mem_quota).map(|p| {
-            (
-                p.ancestor,
-                p.last_node,
-                p.nodes.clone(),
-                p.host_indices,
-            )
-        })
+        self.tree
+            .init_load_back(last_node, mem_quota)
+            .map(|p| (p.ancestor, p.last_node, p.nodes.clone(), p.host_indices))
     }
 
     /// Phase 2 of `load_back` with the DMA result.
@@ -1069,8 +1055,7 @@ impl HiRadixTree {
             nodes,
             host_indices: vec![],
         };
-        self.tree
-            .finish_load_back(&plan, device_indices.as_deref())
+        self.tree.finish_load_back(&plan, device_indices.as_deref())
     }
 
     /// Abandon an open load-back without a DMA result (request aborted).
@@ -1126,10 +1111,7 @@ impl HiRadixTree {
     /// `_drop_subtree_no_host` →
     /// `(freed_device, free_device_runs, free_host_runs)`; all zeros when
     /// refused (a subtree node holds a host reference).
-    fn drop_subtree_no_host(
-        &mut self,
-        root: u32,
-    ) -> (i64, Vec<Vec<i64>>, Vec<Vec<i64>>) {
+    fn drop_subtree_no_host(&mut self, root: u32) -> (i64, Vec<Vec<i64>>, Vec<Vec<i64>>) {
         let r = self.tree.drop_subtree_no_host(root);
         (r.freed_device, r.free_device, r.free_host)
     }
@@ -1272,6 +1254,12 @@ impl SchedulerCore {
                 accepted: r.accepted,
                 finished: r.finished,
                 finish_reason: r.finish_reason.unwrap_or(0),
+                spec: r.spec.map(|s| crate::core::ResultSpec {
+                    accept_len: s.accept_len,
+                    settled: s.settled,
+                    block_accept_len: s.block_accept_len,
+                    cap_len: s.cap_len,
+                }),
             })
             .collect();
         let kv_rows: Vec<KvRow> = kv_rows
@@ -1348,6 +1336,33 @@ impl SchedulerCore {
         self.core.req_retracted_stain(core_idx)
     }
 
+    /// Spec-v2 counters for a live request (plan §9): a dict with
+    /// `spec_verify_ct`, `spec_num_correct_drafts`,
+    /// `spec_num_block_accept_tokens`, `spec_num_cap_tokens`,
+    /// `correct_drafts_histogram`, `cap_lens_histogram` — or None for an
+    /// out-of-range index.
+    fn spec_counters(&self, py: Python<'_>, core_idx: u32) -> PyResult<Py<PyAny>> {
+        match self.core.spec_counters(core_idx) {
+            None => Ok(py.None()),
+            Some(c) => {
+                let d = pyo3::types::PyDict::new(py);
+                d.set_item("spec_verify_ct", c.spec_verify_ct)?;
+                d.set_item("spec_num_correct_drafts", c.spec_num_correct_drafts)?;
+                d.set_item(
+                    "spec_num_block_accept_tokens",
+                    c.spec_num_block_accept_tokens,
+                )?;
+                d.set_item("spec_num_cap_tokens", c.spec_num_cap_tokens)?;
+                d.set_item(
+                    "correct_drafts_histogram",
+                    u64_list(py, &c.correct_drafts_histogram)?,
+                )?;
+                d.set_item("cap_lens_histogram", u64_list(py, &c.cap_lens_histogram)?)?;
+                d.into_py_any(py)
+            }
+        }
+    }
+
     /// `(total_size, evictable_size, protected_size)`.
     fn tree_stats(&self) -> (i64, i64, i64) {
         let t = self.core.tree();
@@ -1357,6 +1372,137 @@ impl SchedulerCore {
     fn tree_node_children(&self, node: u32) -> Vec<u32> {
         self.core.tree().node_children(node)
     }
+}
+
+// ------------------------------------------------- spec-v2 bookkeeping (M6)
+
+/// Per-req spec counters (plan §9) — the `Req` spec fields + the two
+/// growable histograms, driven from Python one settled step at a time.
+#[pyclass]
+struct SpecCounters(crate::spec::SpecCounters);
+
+#[pymethods]
+impl SpecCounters {
+    #[new]
+    fn new() -> Self {
+        Self(crate::spec::SpecCounters::default())
+    }
+
+    /// One settled spec step: `correct_drafts` is the pre-grammar
+    /// `accept_len - 1`; `block` / `cap` are the per-req lens
+    /// (None when the batch column is absent).
+    fn update(&mut self, correct_drafts: u32, block: Option<u32>, cap: Option<u32>) {
+        self.0.update(correct_drafts, block, cap);
+    }
+
+    fn as_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let c = &self.0;
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("spec_verify_ct", c.spec_verify_ct)?;
+        d.set_item("spec_num_correct_drafts", c.spec_num_correct_drafts)?;
+        d.set_item(
+            "spec_num_block_accept_tokens",
+            c.spec_num_block_accept_tokens,
+        )?;
+        d.set_item("spec_num_cap_tokens", c.spec_num_cap_tokens)?;
+        d.set_item(
+            "correct_drafts_histogram",
+            u64_list(py, &c.correct_drafts_histogram)?,
+        )?;
+        d.set_item("cap_lens_histogram", u64_list(py, &c.cap_lens_histogram)?)?;
+        d.into_py_any(py)
+    }
+}
+
+/// Spec-v2 accept-run resolution (plan §9) — the CPU core of
+/// `batch_result_processor._resolve_spec_v2_tokens`.
+///
+/// ```python
+/// runs, num_correct_drafts, per_req, block_total, cap_total = \
+///     resolve_spec_runs(
+///         next_token_ids, stride, accept_lens,
+///         retracted, finished,
+///         grammar_retained,   # list[None | list[int]]
+///         block_accept_lens,  # list[int] | None
+///         cap_lens,           # list[int] | None
+///     )
+/// ```
+///
+/// `next_token_ids` is the flat stride-padded buffer (req `i`'s draft
+/// slots are `[i * stride, i * stride + stride)`); `runs[i]` is the
+/// committed run (grammar-truncated when a retained run is supplied;
+/// empty for unsettled rows — retracted or pre-finished reqs).
+#[pyfunction]
+fn resolve_spec_runs(
+    py: Python<'_>,
+    next_token_ids: Vec<i64>,
+    stride: u32,
+    accept_lens: Vec<u32>,
+    retracted: Vec<bool>,
+    finished: Vec<bool>,
+    grammar_retained: Option<Vec<Option<Vec<i64>>>>,
+    block_accept_lens: Option<Vec<u32>>,
+    cap_lens: Option<Vec<u32>>,
+) -> PyResult<Py<PyAny>> {
+    let n = accept_lens.len();
+    if retracted.len() != n || finished.len() != n {
+        return Err(PyValueError::new_err(
+            "resolve_spec_runs: retracted/finished length != accept_lens",
+        ));
+    }
+    if let Some(g) = &grammar_retained {
+        if g.len() != n {
+            return Err(PyValueError::new_err(
+                "resolve_spec_runs: grammar_retained length != accept_lens",
+            ));
+        }
+    }
+    if let Some(b) = &block_accept_lens {
+        if b.len() != n {
+            return Err(PyValueError::new_err(
+                "resolve_spec_runs: block_accept_lens length != accept_lens",
+            ));
+        }
+    }
+    if let Some(c) = &cap_lens {
+        if c.len() != n {
+            return Err(PyValueError::new_err(
+                "resolve_spec_runs: cap_lens length != accept_lens",
+            ));
+        }
+    }
+
+    let rows: Vec<crate::spec::SpecRow> = (0..n)
+        .map(|i| crate::spec::SpecRow {
+            accept_len: accept_lens[i],
+            retracted: retracted[i],
+            finished: finished[i],
+            grammar_retained: grammar_retained.as_ref().and_then(|g| g[i].clone()),
+            block_accept_len: block_accept_lens.as_ref().map(|b| b[i]),
+            cap_len: cap_lens.as_ref().map(|c| c[i]),
+        })
+        .collect();
+
+    let res = py
+        .detach(|| crate::spec::resolve_spec_runs(&next_token_ids, stride, &rows))
+        .map_err(|e: crate::spec::SpecError| PyValueError::new_err(e.to_string()))?;
+
+    let runs: Vec<Py<PyAny>> = res
+        .runs
+        .iter()
+        .map(|r| int_list(py, &r.tokens))
+        .collect::<PyResult<Vec<_>>>()?;
+    let out = PyTuple::new(
+        py,
+        [
+            runs.into_py_any(py)?,
+            i64::from(res.num_correct_drafts).into_py_any(py)?,
+            u32_list(py, &res.num_correct_drafts_per_req)?,
+            i64::from(res.num_block_accept_tokens).into_py_any(py)?,
+            i64::from(res.num_cap_tokens).into_py_any(py)?,
+        ],
+    )?;
+    out.into_py_any(py)
 }
 
 // ------------------------------------------------------------------ module
@@ -1378,6 +1524,7 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PHASE_LOAD_BACK", sglang_radix::PHASE_LOAD_BACK)?;
     m.add("PHASE_PREFETCH", sglang_radix::PHASE_PREFETCH)?;
     m.add_class::<SchedulerCore>()?;
+    m.add_class::<SpecCounters>()?;
     m.add_class::<RadixTree>()?;
     m.add_class::<SWARadixTree>()?;
     m.add_class::<MambaRadixTree>()?;
@@ -1386,5 +1533,6 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plan_next_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_next_after_decay, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_estimate_after_retract, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_spec_runs, m)?)?;
     Ok(())
 }

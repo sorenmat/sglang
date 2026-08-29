@@ -29,13 +29,14 @@
 
 use std::collections::HashSet;
 
-use sglang_radix::{EvictionPolicy, RadixKey, RadixTree, ROOT};
+use sglang_radix::{EvictionPolicy, ROOT, RadixKey, RadixTree};
 
 use crate::adder::AdmissionTree;
 use crate::ntr::Ntr;
 use crate::planner::plan_next_batch_with_tree;
 use crate::policy;
-use crate::types::{BatchPlan, Config, PlanReq, Policy, StepEnv, CHUNKED_IDX};
+use crate::spec::SpecCounters;
+use crate::types::{BatchPlan, CHUNKED_IDX, Config, PlanReq, Policy, StepEnv};
 
 /// One incoming request (ingress).
 #[derive(Debug, Clone)]
@@ -51,14 +52,34 @@ pub struct IngressReq {
     pub ignore_eos: bool,
 }
 
+/// Spec-v2 (MTP/EAGLE/DFlash) bookkeeping for one result row (plan §9).
+/// The grammar-truncated accepted run arrives as `ResultRow::accepted`;
+/// this carries the pre-truncation counters Python settled.
+#[derive(Debug, Clone)]
+pub struct ResultSpec {
+    /// `accept_lens[i]` — accepted length before grammar truncation
+    /// (drafts + bonus).
+    pub accept_len: u32,
+    /// Python settled this req's spec counters this step (not retracted
+    /// and not finished before the step).
+    pub settled: bool,
+    /// `block_accept_lens[i]` (None = the batch has no block lens).
+    pub block_accept_len: Option<u32>,
+    /// `cap_lens[i]` (None = the batch has no cap lens).
+    pub cap_len: Option<u32>,
+}
+
 /// One last-batch request's result row.
 #[derive(Debug, Clone)]
 pub struct ResultRow {
-    /// Accepted output tokens this step (decode: the sampled token).
+    /// Accepted output tokens this step (decode: the sampled token; the
+    /// full grammar-truncated run for spec-v2 rows).
     pub accepted: Vec<i64>,
     pub finished: bool,
     /// 0 = none, 1 = length, 2 = stop token, 3 = stop string, 4 = abort.
     pub finish_reason: u32,
+    /// Spec-v2 bookkeeping (None = non-spec step).
+    pub spec: Option<ResultSpec>,
 }
 
 /// A request's KV row (global KV pool positions), supplied by Python for
@@ -78,14 +99,25 @@ pub enum Event {
     Evict { values: Vec<Vec<i64>> },
     /// Free token-offset ranges `[start, end)` of this req's
     /// `req_to_token` row in the paged allocator.
-    FreeSegments { pool_idx: u32, ranges: Vec<(u32, u32)> },
+    FreeSegments {
+        pool_idx: u32,
+        ranges: Vec<(u32, u32)>,
+    },
     /// Rewrite `row[pool_idx, start..]` with `new_indices` (the
     /// `cache_unfinished_req` row rewrite that re-points the row at the
     /// tree-owned pool positions).
-    StashRowWrite { pool_idx: u32, start: u32, new_indices: Vec<i64> },
+    StashRowWrite {
+        pool_idx: u32,
+        start: u32,
+        new_indices: Vec<i64>,
+    },
     /// A request finished or was aborted: Python streams/aborts its output.
     /// `out_len` is the final accepted output length.
-    Finished { core_idx: u32, reason: u32, out_len: u32 },
+    Finished {
+        core_idx: u32,
+        reason: u32,
+        out_len: u32,
+    },
 }
 
 /// One scheduler step's output.
@@ -118,6 +150,8 @@ struct CoreReq {
     finish_reason: u32,
     /// Committed KV row length (running / chunked).
     committed_len: u32,
+    /// Spec-v2 counters (plan §9); live on spec-decode requests only.
+    spec: SpecCounters,
 }
 
 impl CoreReq {
@@ -258,6 +292,11 @@ impl SchedulerCore {
         self.reqs[core_idx as usize].out.len() as u32
     }
 
+    /// Spec-v2 counters for a live request (plan §9).
+    pub fn spec_counters(&self, core_idx: u32) -> Option<&SpecCounters> {
+        self.reqs.get(core_idx as usize).map(|r| &r.spec)
+    }
+
     pub fn req_retracted_stain(&self, core_idx: u32) -> bool {
         self.reqs[core_idx as usize].retracted_stain
     }
@@ -285,6 +324,7 @@ impl SchedulerCore {
                 finished: false,
                 finish_reason: 0,
                 committed_len: 0,
+                spec: SpecCounters::default(),
             });
             if idx as usize != self.reqs.len() - 1 {
                 // Slot recycle: the recycled index already holds a dead
@@ -316,6 +356,16 @@ impl SchedulerCore {
                 // token's KV lands on the next decode allocation).
                 if !self.last_was_prefill || self.last_decode_like.contains(&core_idx) {
                     r.committed_len += row.accepted.len() as u32;
+                }
+                // Spec-v2 counters (plan §9): settled only — a retracted or
+                // pre-finished row committed nothing, matching the Python
+                // gate at resolve time.
+                if let Some(s) = row.spec.as_ref().filter(|x| x.settled) {
+                    r.spec.update(
+                        s.accept_len.saturating_sub(1),
+                        s.block_accept_len,
+                        s.cap_len,
+                    );
                 }
             }
 
@@ -403,13 +453,7 @@ impl SchedulerCore {
     }
 
     /// `cache_unfinished_req(req, chunked=True)` on the base path.
-    fn stash_chunk(
-        &mut self,
-        core_idx: u32,
-        committed: u32,
-        row: &[i64],
-        events: &mut Vec<Event>,
-    ) {
+    fn stash_chunk(&mut self, core_idx: u32, committed: u32, row: &[i64], events: &mut Vec<Event>) {
         let fill = self.reqs[core_idx as usize].fill_tokens();
         let key_tokens = (committed as usize).min(fill.len());
         let key = RadixKey::new(&fill[..key_tokens]);
@@ -430,7 +474,11 @@ impl SchedulerCore {
 
         // Re-match: the full key must be resident now.
         let matched = self.tree.match_prefix(&key);
-        debug_assert_eq!(matched.indices.len(), flat.len(), "stash must re-match fully");
+        debug_assert_eq!(
+            matched.indices.len(),
+            flat.len(),
+            "stash must re-match fully"
+        );
         let new_protected = matched.indices.len() as u32;
         if new_protected > protected {
             events.push(Event::StashRowWrite {
@@ -542,8 +590,7 @@ impl SchedulerCore {
             let page = self.cfg.page_size as usize;
             let lpm = self.cfg.active_policy() == Policy::Lpm
                 && n_waiting as u32 <= self.cfg.lpm_queue_degrade_at;
-            let mut scratch =
-                lpm.then(|| RadixTree::new(page, false, EvictionPolicy::Lru));
+            let mut scratch = lpm.then(|| RadixTree::new(page, false, EvictionPolicy::Lru));
             for (pos, &core_idx) in self.waiting.iter().enumerate() {
                 let fill = self.reqs[core_idx as usize].fill_tokens();
                 let key = RadixKey::new(&fill);
@@ -584,8 +631,7 @@ impl SchedulerCore {
             // Python reorders the queue in DFS order; the planner's DfsWeight
             // arm degrades to the stable in-order pass, so admission follows
             // this permuted order.
-            let order =
-                policy::order_dfs(&waiting_snap, &|n| self.tree.node_children(n));
+            let order = policy::order_dfs(&waiting_snap, &|n| self.tree.node_children(n));
             let snap: Vec<PlanReq> = order.iter().map(|&i| waiting_snap[i as usize]).collect();
             waiting_snap = snap;
             scores = order.iter().map(|&i| scores[i as usize]).collect();
@@ -743,12 +789,7 @@ impl SchedulerCore {
                 let core = running_cores[i as usize];
                 let (pool_idx, committed, last_node, out_len) = {
                     let r = &self.reqs[core as usize];
-                    (
-                        r.pool_idx,
-                        r.committed_len,
-                        r.last_node,
-                        r.out.len() as u32,
-                    )
+                    (r.pool_idx, r.committed_len, r.last_node, r.out.len() as u32)
                 };
                 if last_node != ROOT {
                     self.tree.dec_lock_ref(last_node);
@@ -778,7 +819,11 @@ impl SchedulerCore {
                 self.free.push(core);
             }
 
-            self.running = d.decode.iter().map(|&i| running_cores[i as usize]).collect();
+            self.running = d
+                .decode
+                .iter()
+                .map(|&i| running_cores[i as usize])
+                .collect();
             if !d.decode.is_empty() {
                 if d.retract.is_empty() {
                     self.ntr.decay_step();
@@ -844,6 +889,7 @@ mod tests {
                 accepted: vec![7],
                 finished,
                 finish_reason: 0,
+                spec: None,
             })
             .collect()
     }
@@ -910,13 +956,30 @@ mod tests {
         // One decode step; req 1 finishes.
         let events = core.apply_result(
             &[
-                ResultRow { accepted: vec![8], finished: false, finish_reason: 0 },
-                ResultRow { accepted: vec![9], finished: true, finish_reason: 2 },
+                ResultRow {
+                    accepted: vec![8],
+                    finished: false,
+                    finish_reason: 0,
+                    spec: None,
+                },
+                ResultRow {
+                    accepted: vec![9],
+                    finished: true,
+                    finish_reason: 2,
+                    spec: None,
+                },
             ],
             &[kv_row(idx[0], 65, 100), kv_row(idx[1], 33, 200)],
         );
         // out_len counts the prefill-sampled token plus the decode token.
-        assert_eq!(events, vec![Event::Finished { core_idx: idx[1], reason: 2, out_len: 2 }]);
+        assert_eq!(
+            events,
+            vec![Event::Finished {
+                core_idx: idx[1],
+                reason: 2,
+                out_len: 2
+            }]
+        );
         // The finished req's KV is now in the tree.
         assert!(core.tree().total_size() >= 32);
         // It stays in running until the decode filter removes it.
@@ -928,6 +991,85 @@ mod tests {
         assert_eq!(d.decode.len(), 1);
         assert_eq!(d.finished_removed, vec![1]);
         assert_eq!(core.running(), &[idx[0]]);
+    }
+
+    #[test]
+    fn spec_result_updates_counters() {
+        let mut core = SchedulerCore::new(cfg(), EvictionPolicy::Lru);
+        let idx = core.ingest(vec![IngressReq {
+            rid: 1,
+            pool_idx: 0,
+            origin: origin(32, 7),
+            max_new_tokens: 16,
+            priority: 0,
+            arrival_seq: 0,
+            routing_key: 0,
+            ignore_eos: false,
+        }]);
+
+        // Prefill admit + sampled token.
+        let out = core.plan(&env());
+        assert_eq!(out.plan.mode, crate::types::MODE_PREFILL);
+        core.apply_result(
+            &[decode_result(1, false)[0].clone()],
+            &[kv_row(idx[0], 32, 100)],
+        );
+
+        // Decode step with a settled spec row: 3 accepted tokens,
+        // accept_len 4 (drafts + bonus), block/cap lens present.
+        let out = core.plan(&env());
+        assert_eq!(out.plan.mode, crate::types::MODE_DECODE);
+        core.apply_result(
+            &[ResultRow {
+                accepted: vec![11, 12, 13],
+                finished: false,
+                finish_reason: 0,
+                spec: Some(ResultSpec {
+                    accept_len: 4,
+                    settled: true,
+                    block_accept_len: Some(2),
+                    cap_len: Some(3),
+                }),
+            }],
+            &[],
+        );
+        assert_eq!(core.req_out_len(idx[0]), 4); // 1 prefill + 3 spec
+        let c = core.spec_counters(idx[0]).unwrap();
+        assert_eq!(c.spec_verify_ct, 1);
+        assert_eq!(c.spec_num_correct_drafts, 3);
+        assert_eq!(c.spec_num_block_accept_tokens, 2);
+        assert_eq!(c.spec_num_cap_tokens, 3);
+        assert_eq!(c.correct_drafts_histogram, vec![0, 0, 0, 1]);
+        assert_eq!(c.cap_lens_histogram, vec![0, 0, 0, 1]);
+
+        // An unsettled row (retracted / pre-finished) commits nothing and
+        // touches no counters.
+        core.plan(&env());
+        core.apply_result(
+            &[ResultRow {
+                accepted: Vec::new(),
+                finished: false,
+                finish_reason: 0,
+                spec: Some(ResultSpec {
+                    accept_len: 2,
+                    settled: false,
+                    block_accept_len: None,
+                    cap_len: Some(5),
+                }),
+            }],
+            &[],
+        );
+        assert_eq!(core.req_out_len(idx[0]), 4);
+        let c = core.spec_counters(idx[0]).unwrap();
+        assert_eq!(c.spec_verify_ct, 1);
+        assert_eq!(c.spec_num_cap_tokens, 3);
+
+        // A non-spec decode row leaves the counters alone too.
+        core.plan(&env());
+        core.apply_result(&decode_result(1, false), &[]);
+        let c = core.spec_counters(idx[0]).unwrap();
+        assert_eq!(c.spec_verify_ct, 1);
+        assert_eq!(core.req_out_len(idx[0]), 5);
     }
 
     #[test]
@@ -976,6 +1118,7 @@ mod tests {
                 accepted: vec![5],
                 finished: false,
                 finish_reason: 0,
+                spec: None,
             }],
             &[kv_row(idx[1], 16, 300)],
         );
@@ -1049,12 +1192,20 @@ mod tests {
         let p = out.plan.prefill.as_ref().unwrap();
         assert_eq!(p.admitted.len(), 1);
         assert_eq!(p.admitted[0].waiting_idx, 0);
-        assert_eq!((p.admitted[0].extend_start, p.admitted[0].extend_end), (0, 4));
+        assert_eq!(
+            (p.admitted[0].extend_start, p.admitted[0].extend_end),
+            (0, 4)
+        );
         assert_eq!(p.chunked, Some(0));
         assert_eq!(core.chunked_idx(), Some(c0));
 
         core.apply_result(
-            &[ResultRow { accepted: vec![], finished: false, finish_reason: 0 }],
+            &[ResultRow {
+                accepted: vec![],
+                finished: false,
+                finish_reason: 0,
+                spec: None,
+            }],
             &[kv_row(c0, 4, 300)],
         );
         // The parked chunk stashed 0..4 into the tree.
@@ -1064,10 +1215,18 @@ mod tests {
         let out = core.plan(&env());
         let p = out.plan.prefill.as_ref().unwrap();
         assert_eq!(p.admitted[0].waiting_idx, CHUNKED_IDX);
-        assert_eq!((p.admitted[0].extend_start, p.admitted[0].extend_end), (4, 8));
+        assert_eq!(
+            (p.admitted[0].extend_start, p.admitted[0].extend_end),
+            (4, 8)
+        );
         assert_eq!(p.chunked, Some(CHUNKED_IDX));
         core.apply_result(
-            &[ResultRow { accepted: vec![], finished: false, finish_reason: 0 }],
+            &[ResultRow {
+                accepted: vec![],
+                finished: false,
+                finish_reason: 0,
+                spec: None,
+            }],
             &[kv_row(c0, 8, 300)],
         );
         assert_eq!(core.tree().total_size(), 8);
@@ -1076,11 +1235,19 @@ mod tests {
         let out = core.plan(&env());
         let p = out.plan.prefill.as_ref().unwrap();
         assert_eq!(p.admitted[0].waiting_idx, CHUNKED_IDX);
-        assert_eq!((p.admitted[0].extend_start, p.admitted[0].extend_end), (8, 10));
+        assert_eq!(
+            (p.admitted[0].extend_start, p.admitted[0].extend_end),
+            (8, 10)
+        );
         assert_eq!(p.chunked, None);
         assert_eq!(core.chunked_idx(), None);
         core.apply_result(
-            &[ResultRow { accepted: vec![42], finished: false, finish_reason: 0 }],
+            &[ResultRow {
+                accepted: vec![42],
+                finished: false,
+                finish_reason: 0,
+                spec: None,
+            }],
             &[kv_row(c0, 10, 300)],
         );
 
@@ -1150,9 +1317,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|e| match e {
-                Event::FreeSegments { pool_idx, ranges } => {
-                    Some((*pool_idx, ranges.clone()))
-                }
+                Event::FreeSegments { pool_idx, ranges } => Some((*pool_idx, ranges.clone())),
                 _ => None,
             })
             .collect();

@@ -268,7 +268,9 @@ def main():
         if not lb:
             return
         rows = [
-            {"accepted": [5], "finished": False, "finish_reason": 0} for _ in lb
+            {"accepted": [5], "finished": False, "finish_reason": 0,
+             "spec": None}
+            for _ in lb
         ]
         kv = []
         for c in lb:

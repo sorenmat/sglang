@@ -3238,7 +3238,7 @@ class Scheduler(
         if core is not None:
             core.on_abort(rid)
 
-    def _rust_apply_result(self, batch) -> None:
+    def _rust_apply_result(self, batch, result) -> None:
         drivers = getattr(self, "rust_drivers", None)
         if not drivers:
             return
@@ -3246,7 +3246,7 @@ class Scheduler(
         if core is None:
             return
         if batch.forward_mode.is_decode() or batch.forward_mode.is_extend():
-            core.apply_result(batch)
+            core.apply_result(batch, result)
 
     def get_next_batch_to_run(
         self, running_batch: ScheduleBatch, last_batch: Optional[ScheduleBatch]
@@ -4294,7 +4294,7 @@ class Scheduler(
         elif batch.forward_mode.is_idle():
             self.batch_result_processor.process_batch_result_idle(batch, result)
 
-        self._rust_apply_result(batch)
+        self._rust_apply_result(batch, result)
         self._record_step_counters(batch, result)
 
         self.metrics_reporter.log_batch_result_stats(batch, result)

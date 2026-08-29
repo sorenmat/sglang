@@ -573,24 +573,53 @@ class RustCoreDriver:
             self._trace_events(events, op="drop", rid=rid)
         self.rid_to_core.pop(rid, None)
 
-    def apply_result(self, batch) -> None:
+    def apply_result(self, batch, result=None) -> None:
         """Fold one executed batch's results into the core."""
         rows, kv_rows, rids, kv_lens = [], [], [], []
         req_to_token = self.sched.req_to_token_pool.req_to_token
         is_decode = batch.forward_mode.is_decode()
-        for req in batch.reqs:
+        # Spec-v2 (plan §9): the result processor (Rust branch) records the
+        # resolved accepted runs + the pre-step settle gate on `result`.
+        is_spec = is_decode and not batch.spec_algorithm.is_none()
+        spec_runs = getattr(result, "resolved_spec_runs", None)
+        spec_settled = getattr(result, "resolved_spec_settled", None)
+        per_req_cpu = getattr(result, "num_correct_drafts_per_req_cpu", None)
+        spec_block = getattr(result, "resolved_spec_block_accept_lens", None)
+        spec_cap = getattr(result, "resolved_spec_cap_lens", None)
+        for i, req in enumerate(batch.reqs):
             core_idx = self._rid_to(req.rid)
             if core_idx is None:
                 continue
             if req.req_pool_idx is not None:
                 self.pool_idx[core_idx] = int(req.req_pool_idx)
-            accepted = [int(req.output_ids[-1])] if req.output_ids else []
+            spec_meta: Optional[Dict[str, Any]] = None
+            if is_spec and spec_runs is not None and i < len(spec_runs):
+                settled = bool(spec_settled[i]) if spec_settled is not None else True
+                # Settle mirrors Python: retracted / pre-finished rows
+                # committed nothing (the raw slice is dead data downstream).
+                accepted = list(spec_runs[i]) if settled else []
+                accept_len = (
+                    int(per_req_cpu[i]) + 1
+                    if per_req_cpu is not None
+                    else len(accepted)
+                )
+                spec_meta = {
+                    "accept_len": accept_len,
+                    "settled": settled,
+                    "block_accept_len": (
+                        int(spec_block[i]) if spec_block is not None else None
+                    ),
+                    "cap_len": int(spec_cap[i]) if spec_cap is not None else None,
+                }
+            else:
+                accepted = [int(req.output_ids[-1])] if req.output_ids else []
             rids.append(req.rid)
             rows.append(
                 {
                     "accepted": accepted,
                     "finished": bool(req.finished()),
                     "finish_reason": _finish_reason_int(req),
+                    "spec": spec_meta,
                 }
             )
             kv_len: Optional[int] = None
@@ -628,7 +657,7 @@ class RustCoreDriver:
                     # the tree-key tail (origin + out) the replayer needs to
                     # reproduce prefix matches.
                     result=[[list(r["accepted"]), r["finished"],
-                             r["finish_reason"]] for r in rows],
+                             r["finish_reason"], r.get("spec")] for r in rows],
                     # Per-row committed KV fill length (None = no pool row);
                     # the replay feeder rebuilds zero-filled kv_rows from it.
                     kv_lens=kv_lens,

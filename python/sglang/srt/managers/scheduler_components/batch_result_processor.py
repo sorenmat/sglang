@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     List,
     Optional,
@@ -41,6 +42,7 @@ from sglang.srt.runtime_context import (
     max_speculative_num_draft_tokens,
 )
 from sglang.srt.sampling.sampling_observer import CommittedTokens
+from sglang.srt.managers import rust_scheduler
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
 from sglang.srt.state_capturer.indexer_topk import get_global_indexer_capturer
 from sglang.srt.state_capturer.routed_experts import get_global_experts_capturer
@@ -699,18 +701,37 @@ class SchedulerBatchResultProcessor:
 
         next_token_ids = result.next_token_ids.tolist()
         accept_lens = result.accept_lens.tolist()
-        result.num_correct_drafts = sum(accept_lens) - len(batch.reqs)
-        result.num_correct_drafts_per_req_cpu = [x - 1 for x in accept_lens]
-
         block_accept_lens = (
             result.block_accept_lens.tolist()
             if result.block_accept_lens is not None
             else None
         )
+        cap_lens = result.cap_lens.tolist() if result.cap_lens is not None else None
+
+        # In adaptive spec-v2, the worker state may already have switched when this
+        # delayed result is processed. Use the draft token count recorded on result.
+        stride = result.speculative_num_draft_tokens
+        assert stride is not None, "spec-v2 result missing speculative_num_draft_tokens"
+
+        if rust_scheduler.stage_at_least("core"):
+            mod = rust_scheduler.load_module()
+            if mod is not None:
+                return self._resolve_spec_v2_tokens_rust(
+                    mod,
+                    result,
+                    batch,
+                    next_token_ids,
+                    accept_lens,
+                    block_accept_lens,
+                    cap_lens,
+                    stride,
+                )
+
+        result.num_correct_drafts = sum(accept_lens) - len(batch.reqs)
+        result.num_correct_drafts_per_req_cpu = [x - 1 for x in accept_lens]
         result.num_block_accept_tokens = (
             sum(block_accept_lens) if block_accept_lens else 0
         )
-        cap_lens = result.cap_lens.tolist() if result.cap_lens is not None else None
         result.num_cap_tokens = sum(cap_lens) if cap_lens else 0
 
         # Feed the adaptive controller now that accept_lens is on CPU,
@@ -728,11 +749,6 @@ class SchedulerBatchResultProcessor:
         self.advance_grammar_fsm(result, batch)
 
         predict_tokens = []
-        # In adaptive spec-v2, the worker state may already have switched when this
-        # delayed result is processed. Use the draft token count recorded on result.
-        stride = result.speculative_num_draft_tokens
-        assert stride is not None, "spec-v2 result missing speculative_num_draft_tokens"
-
         for i, req in enumerate(batch.reqs):
             accept_tokens = next_token_ids[i * stride : i * stride + accept_lens[i]]
 
@@ -762,6 +778,88 @@ class SchedulerBatchResultProcessor:
                     req.update_spec_cap_lens_histogram(cap_lens[i])
 
             predict_tokens.append(accept_tokens)
+
+        return predict_tokens
+
+    def _resolve_spec_v2_tokens_rust(
+        self,
+        mod: Any,
+        result: GenerationBatchResult,
+        batch: ScheduleBatch,
+        next_token_ids: List[int],
+        accept_lens: List[int],
+        block_accept_lens: Optional[List[int]],
+        cap_lens: Optional[List[int]],
+        stride: int,
+    ) -> List[List[int]]:
+        """Rust accept-run resolution (plan §9 / M6).
+
+        The run slicing + batch totals run in Rust (`resolve_spec_runs`);
+        Python settles the per-req counters exactly as the Python loop did
+        (the egress payload reads them off the reqs) and the core driver
+        folds the same rows into the Rust core's per-req counters.
+        """
+        # Advance the grammar FSM over this batch's committed tokens first
+        # (idempotent + self-gated): it memoizes the grammar-legal runs the
+        # Rust resolution consumes instead of re-advancing the FSM.
+        self.advance_grammar_fsm(result, batch)
+
+        # Pre-step flags: Rust applies the same settle gate
+        # (`retracted or finished -> no commit`).
+        retracted = [bool(req.is_retracted) for req in batch.reqs]
+        finished = [bool(req.finished()) for req in batch.reqs]
+        settled = [not r and not f for r, f in zip(retracted, finished)]
+
+        runs, num_correct_drafts, per_req, block_total, cap_total = (
+            mod.resolve_spec_runs(
+                next_token_ids,
+                stride,
+                accept_lens,
+                retracted,
+                finished,
+                result.grammar_retained_tokens,
+                block_accept_lens,
+                cap_lens,
+            )
+        )
+        result.num_correct_drafts = num_correct_drafts
+        result.num_correct_drafts_per_req_cpu = per_req
+        result.num_block_accept_tokens = block_total
+        result.num_cap_tokens = cap_total
+
+        # Feed the adaptive controller now that accept_lens is on CPU,
+        # instead of doing a synchronous GPU→CPU copy in the worker hot path.
+        self.model_worker.on_verify_complete_cpu(
+            result.num_correct_drafts_per_req_cpu, batch_size=len(batch.reqs)
+        )
+
+        # Bookkeeping inputs for the core driver (rust_scheduler.RustCoreDriver
+        # folds these into the Rust core's per-req spec counters).
+        result.resolved_spec_runs = [list(run) for run in runs]
+        result.resolved_spec_settled = settled
+        result.resolved_spec_block_accept_lens = block_accept_lens
+        result.resolved_spec_cap_lens = cap_lens
+
+        predict_tokens: List[List[int]] = []
+        for i, req in enumerate(batch.reqs):
+            if not settled[i]:
+                # Nothing to settle: no worker pre-claims the bonus, so
+                # kv_committed_len already holds the committed prefix.
+                predict_tokens.append([])
+                continue
+            run = runs[i]
+            # Commit the full accepted run (drafts + bonus).
+            req.kv_committed_len += len(run)
+            req.spec_verify_ct += 1
+            num_correct_drafts = per_req[i]
+            req.spec_num_correct_drafts += num_correct_drafts
+            req.update_spec_correct_drafts_histogram(num_correct_drafts)
+            if block_accept_lens is not None:
+                req.spec_num_block_accept_tokens += block_accept_lens[i]
+            if cap_lens is not None:
+                req.spec_num_cap_tokens += cap_lens[i]
+                req.update_spec_cap_lens_histogram(cap_lens[i])
+            predict_tokens.append(run)
 
         return predict_tokens
 

@@ -11,7 +11,7 @@ the Rust core driver's inputs and outputs::
     {"kind": "core", "op": "plan", "plan": [...], "env": {...},
      "events": [...], ...}
     {"kind": "core", "op": "apply_result", "rids": [...],
-     "result": [[accepted, finished, finish_reason], ...],
+     "result": [[accepted, finished, finish_reason, spec_meta | None], ...],
      "kv_lens": [fill_or_null, ...], "events": [...], ...}
     {"kind": "core", "op": "drop", "rid": "...", "events": [...], ...}
 
@@ -157,7 +157,9 @@ class PlanOp:
 @dataclass(frozen=True)
 class ApplyOp:
     rids: Tuple[str, ...]
-    result: List[Any]  # [[accepted, finished, finish_reason], ...]
+    # [[accepted, finished, finish_reason, spec_meta | None], ...] — the
+    # 4th element (spec-v2 metadata, plan §9) is absent in pre-M6 captures.
+    result: List[Any]
     kv_lens: List[Optional[int]]
     events: List[Any] = field(default_factory=list)
 
@@ -422,6 +424,10 @@ class ReplayResult:
     steps: List[PlanStep]
     final_tree_stats: Tuple[int, int, int]
     final_ntr: float
+    # rid -> the replayed core's spec-v2 counters (plan §9). Empty when no
+    # live req is spec-carrying; lets the test assert the spec metadata
+    # round-tripped through the trace.
+    final_spec_counters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def all_plans_ok(self) -> bool:
@@ -505,6 +511,12 @@ def replay_core(
                     "accepted": [int(t) for t in row[0]],
                     "finished": bool(row[1]),
                     "finish_reason": int(row[2]) if row[2] else 0,
+                    # Spec-v2 metadata (plan §9); absent in pre-M6 captures.
+                    "spec": (
+                        dict(row[3])
+                        if len(row) > 3 and row[3] is not None
+                        else None
+                    ),
                 }
                 for row in op.result
             ]
@@ -537,12 +549,18 @@ def replay_core(
                     f"!= recorded {op.events}"
                 )
 
+    final_spec_counters: Dict[str, Dict[str, Any]] = {}
+    for rid, idx in rid_to_core.items():
+        sc = core.spec_counters(int(idx))
+        if sc is not None:
+            final_spec_counters[rid] = _jsonable(sc)
     return ReplayResult(
         n_ops=len(trace.ops),
         n_plans=plan_index,
         steps=steps,
         final_tree_stats=tuple(core.tree_stats()),
         final_ntr=core.new_token_ratio(),
+        final_spec_counters=final_spec_counters,
     )
 
 
@@ -581,7 +599,8 @@ def synthesize_session_trace(
 
     - iter 0:  ``rA`` (20 distinct tokens) ingested + prefilled;
     - iter 1:  ``rB`` (shares ``rA``'s first 12 tokens) + ``rC`` ingested;
-    - decodes: one sampled token per running req per step;
+    - decodes: one sampled token per running req per step, except iter 3
+      where ``rA`` takes a spec-v2 row (2 accepted tokens, accept_len 3);
     - ``rC`` finishes after 2 decode steps, ``rA`` after 3 (length);
     - ``rB`` is aborted after iter 4's result is folded in;
     - remaining iterations are the idle tail.
@@ -626,6 +645,9 @@ def synthesize_session_trace(
     ingest_at = {0: ["rA"], 1: ["rB", "rC"]}
     finish_after_decodes = {"rA": 3, "rC": 2}
     drop_after_iter = {4: "rB"}
+    # Spec-v2 step (plan §9): iter 3 rA accepts 2 tokens (grammar-truncated
+    # from accept_len 3), exercising the spec row metadata round-trip.
+    spec_decode_iter = {3: "rA"}
     n_iters = 10
 
     core = mod.SchedulerCore(cfg, tree_policy)
@@ -684,10 +706,15 @@ def synthesize_session_trace(
             for i, core_idx in enumerate(lb):
                 rid = core_rid_to_str[str(core.req_rid(core_idx))]
                 tok = 5000 + it
+                is_spec_row = spec_decode_iter.get(it) == rid
+                n_accept = 2 if is_spec_row else 1
                 if mode == 1:  # prefill admit: fill = the extend_end
                     fill = int(pre_entries[i][3])
-                else:  # decode: origin + out + the sampled token
-                    fill = origin_len[rid] + int(core.req_out_len(core_idx)) + 1
+                else:  # decode: origin + out + the accepted run
+                    fill = (
+                        origin_len[rid] + int(core.req_out_len(core_idx))
+                        + n_accept
+                    )
                 is_fin = (
                     mode == 2
                     and rid in finish_after_decodes
@@ -698,9 +725,14 @@ def synthesize_session_trace(
                 if is_fin:
                     finished.add(rid)
                 rows.append({
-                    "accepted": [tok],
+                    "accepted": [tok, tok + 1][:n_accept],
                     "finished": bool(is_fin),
                     "finish_reason": 1 if is_fin else 0,
+                    "spec": (
+                        {"accept_len": 3, "settled": True,
+                         "block_accept_len": None, "cap_len": None}
+                        if is_spec_row else None
+                    ),
                 })
                 kv_lens.append(fill)
                 rids.append(rid)
@@ -714,8 +746,8 @@ def synthesize_session_trace(
             _emit({
                 "kind": "core", "op": "apply_result",
                 "rids": rids,
-                "result": [[r["accepted"], r["finished"], r["finish_reason"]]
-                           for r in rows],
+                "result": [[r["accepted"], r["finished"], r["finish_reason"],
+                            r.get("spec")] for r in rows],
                 "kv_lens": kv_lens,
                 "events": _jsonable(apply_events),
             })

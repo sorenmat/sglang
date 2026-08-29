@@ -43,3 +43,7 @@ criterion = "0.5"
 [[bench]]
 name = "planner_bench"
 harness = false
+
+[[bench]]
+name = "spec_bench"
+harness = false

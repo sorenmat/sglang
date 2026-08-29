@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, M2/1d HiRadix, M2/1e unified multi-pool tree ports + M5 stream payload build on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, M2/1d HiRadix, M2/1e unified multi-pool tree ports + M5 stream payload build + M6 spec accept-run bookkeeping on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -609,6 +609,31 @@ job in `pr-test-rust-exts.yml`. The per-request collection (rids / lens /
 finish reasons off the `Req`s) still runs in Python — the core owning that
 state is the Phase-4 remainder; the canonical-session trace parity + ITL p99
 gates are host-gated.
+
+**M6 status (code complete on `rust-scheduler`):** the CPU accept-run
+resolution of `_resolve_spec_v2_tokens` is ported to `sglang-scheduler`
+(`src/spec.rs`: `resolve_spec_runs` — stride-padded slice + grammar-retained
+substitution + retracted/finished gate + the four result fields, and
+`SpecCounters` — the `Req` spec counters + the two growable histograms).
+The grammar FSM (per-req xgrammar object) stays in Python:
+`advance_grammar_fsm` runs first and its `grammar_retained_tokens` feed
+Rust as an input column; the torch-side KV move and the adaptive
+controller feed also stay Python. `_resolve_spec_v2_tokens` takes the Rust
+path under `SGLANG_RUST_SCHEDULER≥core` (Python still settles the per-req
+counters it reads off the `Req`s for the egress payload, and records
+`resolved_spec_*` on the result so the core driver folds the same rows into
+the core's per-req `SpecCounters` via the new `ResultRow.spec` metadata —
+`apply_result` is the only bookkeeping path). The synthetic replay session
+now carries a spec-v2 row (iter 3, rA) so the lossless-replay backbone
+round-trips the metadata. Verified by 38 `sglang-scheduler` unit tests
+(resolve edge cases + counter/histogram growth + the core spec-row path),
+the M6 criterion benches (`spec_bench`: B=1/16/64/256 × MTP/EAGLE stride ×
+grammar/block-cap), and
+`test/registered/rust/test_rust_spec_parity.py` (CPU CI, differential:
+accepted runs byte-parity vs the Python commit contract, counters vs the
+production `Req` histogram methods where torch is available, and the
+live-core spec-row path). The accepted-run trace gate on a real MTP/DFlash
+session + the e2e spec-workload throughput gate remain host-gated.
 
 ## 9. Phase 5 — Speculative-decoding bookkeeping (MTP/DFlash)
 

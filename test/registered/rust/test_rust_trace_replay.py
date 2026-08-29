@@ -77,6 +77,21 @@ class TestRustTraceReplay(CustomTestCase):
         # The session was genuinely exercised: it ends with a non-trivial
         # resident cache (finished requests were stashed / released into it).
         self.assertGreater(result.final_tree_stats[0], 0)
+        # The spec-v2 metadata round-tripped through the trace: rA took one
+        # settled spec row at iter 3 (2 accepted tokens, accept_len 3 ->
+        # 2 correct drafts); rC never did.
+        self.assertEqual(
+            result.final_spec_counters.get("rA"),
+            {
+                "spec_verify_ct": 1,
+                "spec_num_correct_drafts": 2,
+                "spec_num_block_accept_tokens": 0,
+                "spec_num_cap_tokens": 0,
+                "correct_drafts_histogram": [0, 0, 1],
+                "cap_lens_histogram": [],
+            },
+        )
+        self.assertEqual(result.final_spec_counters.get("rC", {}).get("spec_verify_ct"), 0)
 
     def test_replay_detects_hard_plan_diff(self):
         replay.synthesize_session_trace(self.mod, path=self.path("h.jsonl"))
