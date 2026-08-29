@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: draft · Owner: TBD · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete on branch `rust-scheduler`) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -550,15 +550,50 @@ analysis, verified rather than assumed.
 
 ## 15. Immediate next actions
 
-1. Stand up Phase 0: add `SGLANG_TRACE_SCHEDULER` capture to
-   `scheduler.py` (ingress/plan/result lines only, ~100 LOC) and the
-   scripted-replay feeder on top of `sglang.test.scripted_runtime`.
-2. Record M1–M11 Python baselines into `benchmark/scheduler/baselines/`.
-3. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
-   short-turn high-rate) with the trace on.
-4. Scaffold `rust/sglang-radix` (Cargo, CI entry in `pr-test-rust-exts.yml`
-   path filters, criterion dep) and run M1–M4 differential tests against
-   `RadixCache` and `RadixCacheCpp`.
-5. Write the `BatchPlan`/`GpuState`/`ReqSnapshot` type definitions
-   (compile-only) so Phase 2 design review can happen against real types
-   before the planner is implemented.
+Progress on branch `rust-scheduler` (all code lives there; nothing is
+default-on, so the unmodified Python path is unchanged until a flag is set):
+
+Done (this effort):
+- [x] `rust/sglang-radix` crate: base radix tree with the Python
+      `RadixCache` semantics (match/insert/evict/lock-ref, LRU, page-floor,
+      bigram/EAGLE view). Golden + property tests, `radix_bench` criterion
+      bench, clippy-clean. CI job `sglang-radix-unit` in
+      `pr-test-rust-exts.yml`.
+- [x] `rust/sglang-scheduler` crate: pure decision engine
+      (`planner`/`adder`/`ntr`/`policy`/`core` = the persistent
+      `SchedulerCore` that owns queues + tree + NTR tracker). 30 unit tests,
+      `planner_bench` criterion bench, clippy-clean. CI job
+      `sglang-scheduler-unit` (rlib tests + pyo3 cdylib build + `smoke_test.py`).
+- [x] PyO3 bindings (`sglang-scheduler` `python` feature → the
+      `_scheduler` extension: `RadixTree` facade incl. `match_prefix_meta`
+      fast path, shadow `plan_next_batch`, `SchedulerCore`). `smoke_test.py`
+      + `driver_test.py` (21 checks) exercise the `.so` directly.
+- [x] Python integration, all env-gated off by default:
+      `python/sglang/srt/mem_cache/rust_radix.py` (dual-write
+      `RustRadixShadow` facade, resync on divergence) and
+      `python/sglang/srt/managers/rust_scheduler.py` (shadow planner +
+      `SchedulerCore` driver + trace capture), wired into
+      `scheduler.py`. Staged flag `SGLANG_RUST_SCHEDULER=off|radix|planner|core|stream`;
+      core cutover further gated by `SGLANG_RUST_CORE_APPLY` (default off =
+      bookkeeping/trace only, no double-free).
+- [x] Phase 0 capture: `SGLANG_TRACE_SCHEDULER` JSONL (ingress/plan/result/
+      cache-op lines) in the driver; `TraceRecorder` is crash-safe (flushes
+      per line).
+- [x] `benchmark/scheduler/` harness (`bench_common.py`) + Rust M1–M7/M11
+      through the PyO3 boundary (`bench_rust_scheduler.py`, `baselines/rust.json`
+      recorded) + Python M1–M4/M5–M7 baseline scripts (`bench_py_radix.py`,
+      `bench_py_planner.py` — run on the target machine, torch) + README.
+- [x] Differential parity test `test/registered/rust/test_rust_radix_parity.py`
+      (Rust `RadixTree` vs Python `RadixCache`, same op sequence); new crate
+      added to the checked-in-crate discovery test.
+
+Remaining (needs the target GPU host, in plan order):
+1. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
+   short-turn high-rate) with `SGLANG_TRACE_SCHEDULER` on, and the M1–M11
+   Python baselines via `bench_py_radix.py` / `bench_py_planner.py`.
+2. Extend `sglang.test.scripted_runtime` to feed recorded ingress sequences
+   through a mocked `run_batch` so a trace replays into the live scheduler
+   and the Python vs Rust plans diff field-for-field (the correctness
+   backbone of every later gate).
+3. Run the M3-style e2e A/B on the Qwen3.8 27B target: flat at c16 → stop;
+   ≥2% throughput → continue to `core`/`stream` cutover.
