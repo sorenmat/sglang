@@ -41,6 +41,7 @@ from typing import Iterable, Optional
 import torch
 from torch import Tensor
 
+from sglang.srt.environ import envs
 from sglang.srt.layers.quantization.kvfp4_tensor import E2M1_MAX
 from sglang.srt.utils.common import is_sm100_supported
 
@@ -347,6 +348,9 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
         self.v_scales_gpu = torch.ones(num_layers, dtype=torch.float32, device=device)
         self.k_scales_float = [1.0] * num_layers
         self.v_scales_float = [1.0] * num_layers
+        # Optional incremental FP8 mirror (see NVFP4DequantMirror); allocated
+        # in create_buffers when SGLANG_NVFP4_DQ_MIRROR_FRACTION > 0.
+        self.dequant_mirror = None
 
     def needs_global_scale(self) -> bool:
         return True
@@ -471,6 +475,26 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
             else None
         )
 
+        # Incremental dequant mirror: keeps dequantized FP8 rows keyed by
+        # slot so repeated prefix dequant (chunked prefill, spec verify) only
+        # pays for newly written slots. Opt-in; charged in compute_cell_size.
+        dequant_mirror = None
+        mirror_fraction = envs.SGLANG_NVFP4_DQ_MIRROR_FRACTION.get()
+        if dq_dtype is not None and 0.0 < mirror_fraction <= 1.0:
+            from sglang.srt.layers.quantization.nvfp4_dequant_mirror import (
+                NVFP4DequantMirror,
+            )
+
+            dequant_mirror = NVFP4DequantMirror(
+                size=m,
+                mirror_size=max(1, int(m * mirror_fraction)),
+                layer_num=layer_num,
+                head_num=n,
+                head_dim=k,
+                device=device,
+                dtype=dq_dtype,
+            )
+
         return {
             "k_buffer": k_buffer,
             "v_buffer": v_buffer,
@@ -479,6 +503,7 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
             "dq_k_buffer": dq_k_buffer,
             "dq_v_buffer": dq_v_buffer,
             "store_dtype": store_dtype,
+            "dequant_mirror": dequant_mirror,
         }
 
     def quantize_and_store(
@@ -511,6 +536,9 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
         v_buffer[loc] = cache_v
         k_scale_buffer[loc] = cache_k_fp4_sf
         v_scale_buffer[loc] = cache_v_fp4_sf
+
+        if self.dequant_mirror is not None:
+            self.dequant_mirror.note_kv_write(loc)
 
     def dequantize_prev_kv(
         self,
@@ -553,7 +581,21 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
             if dq_dtype is not None
             else 0
         )
-        return fp4_size + scale_size + dq_size
+        # Optional incremental mirror: per-layer FP8 K+V over a fraction of
+        # the pool (see SGLANG_NVFP4_DQ_MIRROR_FRACTION).
+        mirror_fraction = envs.SGLANG_NVFP4_DQ_MIRROR_FRACTION.get()
+        mirror_size = (
+            head_num
+            * head_dim
+            * 2
+            * num_layers
+            * kv_size
+            * torch.empty((), dtype=dq_dtype).element_size()
+            * mirror_fraction
+            if (dq_dtype is not None and 0.0 < mirror_fraction <= 1.0)
+            else 0
+        )
+        return fp4_size + scale_size + dq_size + int(mirror_size)
 
 
 class FP4MXBlock16KVCacheMethod(KVCacheQuantMethodBase):

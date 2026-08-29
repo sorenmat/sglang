@@ -2018,6 +2018,9 @@ class MHATokenToKVPool(KVCache):
         self.dq_k_buffer = buf.get("dq_k_buffer")
         self.dq_v_buffer = buf.get("dq_v_buffer")
         self.store_dtype = buf.get("store_dtype", torch.uint8)
+        # Incremental FP8 dequant mirror (None unless the quant method
+        # allocated one); see NVFP4DequantMirror.
+        self.dequant_mirror = buf.get("dequant_mirror")
         self._check_quantized_buffer_access_requirements()
 
     def _check_quantized_buffer_access_requirements(self):
@@ -2316,6 +2319,9 @@ class MHATokenToKVPool(KVCache):
                 v_chunk = v_cpu.to(self.v_buffer[0].device, non_blocking=True)
                 self.k_buffer[layer_id][chunk_indices] = k_chunk
                 self.v_buffer[layer_id][chunk_indices] = v_chunk
+                mirror = getattr(self, "dequant_mirror", None)
+                if mirror is not None:
+                    mirror.note_kv_write(chunk_indices)
         current_platform.synchronize()
 
     def _get_key_buffer(self, layer_id: int):
@@ -2660,6 +2666,40 @@ class MHATokenToKVPool(KVCache):
             return [int(value) for value in values.cpu().tolist()]
         return [int(value) for value in values]
 
+    def _dequant_rows_for_layer(
+        self,
+        layer_id: int,
+        global_layer_id: int,
+        k_fp4: torch.Tensor,
+        k_scales: torch.Tensor,
+        v_fp4: torch.Tensor,
+        v_scales: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Dequantized FP8 rows for ``indices``: through the incremental mirror
+        when one is allocated (only newly written slots re-dequantize), else
+        dequantized on the fly."""
+        mirror = getattr(self, "dequant_mirror", None)
+        if mirror is not None:
+            return mirror.refresh(
+                layer_id - self.start_layer,
+                indices,
+                lambda idx: self.quant_method.dequantize_prev_kv(
+                    k_fp4[idx],
+                    k_scales[idx],
+                    v_fp4[idx],
+                    v_scales[idx],
+                    global_layer_id,
+                ),
+            )
+        return self.quant_method.dequantize_prev_kv(
+            k_fp4[indices],
+            k_scales[indices],
+            v_fp4[indices],
+            v_scales[indices],
+            global_layer_id,
+        )
+
     def _prepare_dequant_extend_workspace(
         self,
         layer_id: int,
@@ -2692,12 +2732,14 @@ class MHATokenToKVPool(KVCache):
 
             if prev_len > 0:
                 prev_indices = req_to_token[req_idx, :prev_len]
-                k_prev_fp8, v_prev_fp8 = self.quant_method.dequantize_prev_kv(
-                    k_fp4[prev_indices],
-                    k_scales[prev_indices],
-                    v_fp4[prev_indices],
-                    v_scales[prev_indices],
+                k_prev_fp8, v_prev_fp8 = self._dequant_rows_for_layer(
+                    layer_id,
                     global_layer_id,
+                    k_fp4,
+                    k_scales,
+                    v_fp4,
+                    v_scales,
+                    prev_indices,
                 )
                 dq_k[cur_token_idx_dq : cur_token_idx_dq + prev_len] = k_prev_fp8
                 dq_v[cur_token_idx_dq : cur_token_idx_dq + prev_len] = v_prev_fp8
@@ -2737,12 +2779,14 @@ class MHATokenToKVPool(KVCache):
             if seq_len <= 0:
                 continue
             kv_indices = req_to_token[req_idx, :seq_len]
-            k_prev_fp8, v_prev_fp8 = self.quant_method.dequantize_prev_kv(
-                k_fp4[kv_indices],
-                k_scales[kv_indices],
-                v_fp4[kv_indices],
-                v_scales[kv_indices],
+            k_prev_fp8, v_prev_fp8 = self._dequant_rows_for_layer(
+                layer_id,
                 global_layer_id,
+                k_fp4,
+                k_scales,
+                v_fp4,
+                v_scales,
+                kv_indices,
             )
             dq_k[kv_indices] = k_prev_fp8
             dq_v[kv_indices] = v_prev_fp8
@@ -2842,6 +2886,12 @@ class MHATokenToKVPool(KVCache):
             row_dim=self.row_dim,
             store_dtype=self.store_dtype,
         )
+        mirror = getattr(self, "dequant_mirror", None)
+        if mirror is not None:
+            # Over-stamp the whole loc grid: rows beyond commit_len were not
+            # written, but marking them stale only costs a later re-dequant
+            # and avoids a masked-select sync here.
+            mirror.note_kv_write(loc_2d.reshape(-1))
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         # Zero-layer pool (e.g. all-SWA model's full sub-pool) has no buffers.
@@ -2852,6 +2902,12 @@ class MHATokenToKVPool(KVCache):
         size_limit = self.size + self.page_size
         maybe_detect_oob(tgt_loc, 0, size_limit, "move_kv_cache tgt_loc")
         maybe_detect_oob(src_loc, 0, size_limit, "move_kv_cache src_loc")
+
+        mirror = getattr(self, "dequant_mirror", None)
+        if mirror is not None:
+            # Target rows now hold different content; invalidate their mirror
+            # copies so the next dequant refresh re-reads them.
+            mirror.note_kv_write(tgt_loc)
 
         if self.use_hnd:
             pages_t, offs_t = tgt_loc // self.page_size, tgt_loc % self.page_size

@@ -1254,6 +1254,13 @@ class Envs:
     # validated on SM120, so Triton remains the default there.
     SGLANG_GDN_FLASHINFER_VERIFY_SM120 = EnvBool(False)
 
+    # Opt-in: fraction (0..1] of the NVFP4 KV pool covered by an incremental
+    # FP8 dequant mirror, so repeated prefix dequantization (every chunked-
+    # prefill chunk, every speculative verify cycle) only pays for newly
+    # written slots instead of O(context) per step. Costs mirror_fraction x
+    # (per-layer FP8 K+V) extra KV bytes; 0 disables (default).
+    SGLANG_NVFP4_DQ_MIRROR_FRACTION = EnvFloat(0.0)
+
     # ===================================================================
     # CUDA graphs and execution buffers
     # ===================================================================
