@@ -22,6 +22,8 @@ pub mod types;
 
 #[cfg(feature = "python")]
 mod pybind;
+#[cfg(feature = "python")]
+mod unified;
 
 pub use planner::plan_next_batch;
 pub use types::{BatchPlan, Config, PlanReq, StepEnv};

@@ -42,6 +42,7 @@ use pyo3::IntoPyObjectExt;
 use sglang_radix::{EvictionPolicy, RadixKey, ROOT};
 
 use crate::core::{Event, IngressReq, KvRow, ResultRow, SchedulerCore as EngineCore};
+use crate::unified::UnifiedRadixTreePy;
 use crate::ntr::Ntr;
 use crate::planner::plan_next_batch as engine_plan;
 use crate::types::{
@@ -616,6 +617,7 @@ impl SWARadixTree {
     /// `(prefix_len, last_node, free_kv, free_full, free_swa, recover)`
     /// where `recover` is a list of `[tree_value, incoming]` runs the
     /// caller re-points (`set_full_to_swa_mapping` + `free_full`).
+    #[allow(clippy::type_complexity)]
     fn insert(
         &mut self,
         py: Python<'_>,
@@ -659,6 +661,7 @@ impl SWARadixTree {
 
     /// `evict(full_tokens, swa_tokens)` →
     /// `(full_evicted, swa_evicted, free_kv, free_full, free_swa)`.
+    #[allow(clippy::type_complexity)]
     fn evict(
         &mut self,
         py: Python<'_>,
@@ -780,6 +783,7 @@ impl MambaRadixTree {
     /// `(prefix_len, last_node, mamba_exist, free_kv_runs,
     /// free_kv_start_pos, free_mamba)` where `free_kv_runs[i]` is freed
     /// via `free_segment(run, start_pos=free_kv_start_pos[i])`.
+    #[allow(clippy::type_complexity)]
     fn insert(
         &mut self,
         py: Python<'_>,
@@ -823,6 +827,7 @@ impl MambaRadixTree {
     /// `evict(full_tokens, mamba_num)` →
     /// `(full_evicted, mamba_evicted, free_kv_runs, free_kv_start_pos,
     /// free_mamba)`.
+    #[allow(clippy::type_complexity)]
     fn evict(
         &mut self,
         py: Python<'_>,
@@ -942,6 +947,7 @@ impl HiRadixTree {
     /// `match_prefix(keys)` →
     /// `(indices, last_device_node, last_host_node, host_hit_length,
     /// splits)`; each split is `(front, tail)`.
+    #[allow(clippy::type_complexity)]
     fn match_prefix(
         &mut self,
         py: Python<'_>,
@@ -965,6 +971,7 @@ impl HiRadixTree {
     /// `backup_needed` lists the nodes that crossed the write-through
     /// threshold without a backup: run the host DMA, then
     /// `begin_backup(node, host_indices, lock=True)`.
+    #[allow(clippy::type_complexity)]
     fn insert(
         &mut self,
         py: Python<'_>,
@@ -1110,10 +1117,8 @@ impl HiRadixTree {
         self.tree.dec_lock_ref(node)
     }
 
-    /// write_back facade primitives.
-
-    /// `_detach_backuped`: demote to host-only, returning the device run
-    /// (the caller keeps it for the staged DMA).
+    /// write_back facade primitives. `_detach_backuped`: demote to host-only,
+    /// returning the device run (the caller keeps it for the staged DMA).
     fn detach_backuped(&mut self, node: u32) -> Vec<i64> {
         self.tree.detach_backuped(node)
     }
@@ -1364,11 +1369,20 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MODE_NONE", 0i32)?;
     m.add("MODE_PREFILL", 1i32)?;
     m.add("MODE_DECODE", 2i32)?;
+    m.add("CT_FULL", sglang_radix::CT_FULL)?;
+    m.add("CT_SWA", sglang_radix::CT_SWA)?;
+    m.add("CT_MAMBA", sglang_radix::CT_MAMBA)?;
+    m.add("CT_C128", sglang_radix::CT_C128)?;
+    m.add("PHASE_BACKUP_HOST", sglang_radix::PHASE_BACKUP_HOST)?;
+    m.add("PHASE_BACKUP_STORAGE", sglang_radix::PHASE_BACKUP_STORAGE)?;
+    m.add("PHASE_LOAD_BACK", sglang_radix::PHASE_LOAD_BACK)?;
+    m.add("PHASE_PREFETCH", sglang_radix::PHASE_PREFETCH)?;
     m.add_class::<SchedulerCore>()?;
     m.add_class::<RadixTree>()?;
     m.add_class::<SWARadixTree>()?;
     m.add_class::<MambaRadixTree>()?;
     m.add_class::<HiRadixTree>()?;
+    m.add_class::<UnifiedRadixTreePy>()?;
     m.add_function(wrap_pyfunction!(plan_next_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_next_after_decay, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_estimate_after_retract, m)?)?;

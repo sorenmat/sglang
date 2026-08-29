@@ -451,6 +451,7 @@ impl MambaRadixTree {
 
     /// Port of `_insert_helper`. Returns
     /// `(total_prefix_length, deepest_node, mamba_value_exist)`.
+    #[allow(clippy::too_many_arguments)]
     fn insert_helper(
         &mut self,
         ns: u32,

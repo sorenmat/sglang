@@ -361,7 +361,7 @@ fn bench_mamba_evict(c: &mut Criterion) {
         });
     }
     // 1 shared internal state + 255 tail states.
-    let m = (256usize as f64 * 0.1) as usize;
+    let m = (256_f64 * 0.1) as usize;
     group.bench_with_input("agent-256_mamba-10pct", &m, |b, &m| {
         b.iter(|| {
             let mut t = tree.clone();

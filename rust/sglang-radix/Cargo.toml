@@ -19,3 +19,7 @@ criterion = "0.5"
 [[bench]]
 name = "radix_bench"
 harness = false
+
+[[bench]]
+name = "unified_bench"
+harness = false

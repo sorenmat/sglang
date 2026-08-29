@@ -57,6 +57,22 @@ def _python_tree_core_factory(
 register_tree_core_backend("python", _python_tree_core_factory)
 
 
+def _rust_tree_core_factory(
+    params: CacheInitParams, components: dict[ComponentType, TreeComponent]
+) -> UnifiedTreeCoreInterface:
+    """The Rust-engine TreeCore (loaded from the `_scheduler` extension).
+
+    The import lives in the factory body so the extension (and its cdylib)
+    is only loaded when the backend is actually selected.
+    """
+    from sglang.srt.mem_cache.unified_cache.tree_core_rust import UnifiedTreeCoreRust
+
+    return UnifiedTreeCoreRust(params, components)
+
+
+register_tree_core_backend("rust", _rust_tree_core_factory)
+
+
 def create_tree_core(
     name: str,
     params: CacheInitParams,

@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, and M2/1d HiRadix tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, M2/1d HiRadix, and M2/1e unified multi-pool tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -305,6 +305,52 @@ fake controller whose `write` / `load` hand out deterministic arange
 runs that the test feeds back into the Rust tree via
 `begin_backup` / `finish_load_back`). The Python-side
 `HiRadixCacheRust` facade + default-flip wiring is M7.
+
+**M2/1e (unified multi-pool tree) is code-complete on this branch:**
+`rust/sglang-radix/src/unified/` ports the `UnifiedTreeCore` tree
+semantics (the multi-pool `unified_radix_cache.py` engine): one node
+arena carrying a device + host value list per component (FULL / SWA /
+Mamba / C128), per-component intrusive LRU lists (device + host layer)
+with the FULL last-access-time strategy, per-namespace child keys
+(`extra_key` / `cache_salt` as the `ns` u32 under the single root), the
+stepped resumable insert walk (`begin_insert` / `resume_insert` /
+`end_insert` with the split / unevict / overlap-claim barriers that emit
+`FreeDeviceKV` / `ReplaceWriteThroughOnNodeSplit` / Mamba-excess
+actions), the multi-validator match with device/host boundary tracking
+and host-hit lengths, the inc/dec lock-ref walks (FULL node→root, SWA
+uuid-bounded, Mamba node-only, skip-id replay), the stepwise
+device-eviction walks (leaf heap for FULL, LRU cursor for SWA/Mamba)
+with demote vs delete vs deferred write-back backup
+(`evict_device_leaf` → `BackupKV` → `commit_backup` + `demote_node`),
+`drop_subtree_no_host`, the host-tier `insert_host` +
+`drive_host_eviction` (write_back duplicate-host reclaim + rolling
+digest), the write-through / load-back pending marks and their commits,
+the KV placement event log, `sanity_check`, and node dumps. No torch
+crosses the boundary: component values are plain pool-index lists and
+allocator calls come back as action / value-run lists the controller
+drains. Exposed as the `UnifiedRadixTree` pyclass in
+`sglang-scheduler` pybind (module constants `CT_*` + `PHASE_*`) and
+wrapped as `UnifiedTreeCoreRust` behind the
+`UnifiedTreeCoreInterface` (`python/sglang/srt/mem_cache/unified_cache/
+tree_core_rust.py`, registered as the `rust` tree-core backend via
+`tree_core_registry.py` — env
+`SGLANG_UNIFIED_RADIX_TREE_CORE_BACKEND=rust`); the Python components
+keep only their facade-level hooks under the Rust backend, the
+tree-level FULL/SWA/Mamba hooks run inside the engine. Verified by 56
+library + 16 integration Rust tests (torch-free), 15 criterion benches
+(`unified_bench`: stepped insert, full / split / partial match,
+write-through + write-back full drains and partials, insert_host +
+drive_host_eviction, lock walks, KV-canary walk, clone, over the
+256-agent shape), and
+`test/registered/rust/test_rust_unified_radix_parity.py` (CPU CI,
+differential against the unmodified Python `UnifiedTreeCore` with the
+real `FullComponent`, FULL-only, driven by one shared op script:
+match / insert / split / lock / full-drain / un-evict / namespaces in
+the main script, and the write-back backup-demote round trip +
+insert_host + host-pressure reclaim in a second script; node identity
+by root path, freed values compared as multisets, full drains only —
+same LRU tie-break caveat as the other parity tests). The facade
+default-flip + upstream RFC PRs are M7.
 
 Host-gated remainder: record the two canonical target-hardware sessions
 (below) and the Python-side M1–M11 baselines for the A/B numbers.

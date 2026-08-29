@@ -26,6 +26,7 @@ mod mamba;
 mod policy;
 mod swa;
 mod tree;
+mod unified;
 
 pub use hiradix::{
     DropSubtreeResult, HiEvictResult, HiHostEvictResult, HiInsertResult, HiMatchResult, HiPolicy,
@@ -43,3 +44,10 @@ pub use swa::{
     SWARadixTree,
 };
 pub use tree::{ChildKey, EvictResult, Head, InsertResult, MatchResult, NodeId, RawNode, RadixTree, ROOT};
+pub use unified::{
+    UCacheAction, UChildKey, UConfig, UHead, UIncLockResult, ULoadBackSpec, UNode, UNodeDump,
+    UStepResult, UStorageBackupSpec, UTransfer, UWalkResult, UDecLockParams, UnifiedRadixTree,
+    UIntsertResult, UMatchResult, UInsertParams, UEvictOutcome, UEvictStep, UrkvEvent,
+    PHASE_BACKUP_HOST, PHASE_BACKUP_STORAGE, PHASE_LOAD_BACK, PHASE_PREFETCH,
+    CT_BASE, CT_C128, CT_FULL, CT_MAMBA, CT_SWA, NUM_CT,
+};

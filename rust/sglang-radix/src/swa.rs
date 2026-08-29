@@ -341,7 +341,7 @@ impl SWARadixTree {
         let mut value: Vec<Vec<i64>> = Vec::new();
 
         let window = self.sliding_window_size;
-        let window_ok = |n: &Option<usize>| n.map_or(true, |x| x >= window);
+        let window_ok = |n: &Option<usize>| n.is_none_or(|x| x >= window);
         let add_run = |state: &mut Option<usize>, run: &Vec<i64>| {
             if let Some(n) = state {
                 *n += run.len();
@@ -454,6 +454,7 @@ impl SWARadixTree {
     /// Port of `_insert_helper`. Returns `(total_prefix_length, node)`
     /// where `node` is the deepest node the walk touched (the new leaf
     /// when one was created).
+    #[allow(clippy::too_many_arguments)]
     fn insert_helper(
         &mut self,
         ns: u32,
@@ -509,7 +510,7 @@ impl SWARadixTree {
                         self.nodes[node as usize].full_lock_ref
                     );
                     assert!(
-                        swa_evicted_seqlen % self.page_size == 0,
+                        swa_evicted_seqlen.is_multiple_of(self.page_size),
                         "swa_evicted_seqlen must be page aligned, swa_evicted_seqlen={swa_evicted_seqlen}"
                     );
                     if swa_evicted_seqlen <= total_prefix_length {
@@ -847,10 +848,10 @@ impl SWARadixTree {
                         self.swa_protected_size -= l;
                     }
                     n.swa_lock_ref -= 1;
-                    if let Some(u) = swa_uuid_for_lock {
-                        if self.nodes[node as usize].swa_uuid == Some(u) {
-                            dec_lock_swa = false;
-                        }
+                    if swa_uuid_for_lock
+                        .is_some_and(|u| self.nodes[node as usize].swa_uuid == Some(u))
+                    {
+                        dec_lock_swa = false;
                     }
                 }
             }
@@ -898,10 +899,10 @@ impl SWARadixTree {
                 }
                 n.swa_lock_ref -= 1;
             }
-            if let Some(u) = swa_uuid_for_lock {
-                if self.nodes[node as usize].swa_uuid == Some(u) {
-                    break;
-                }
+            if swa_uuid_for_lock
+                .is_some_and(|u| self.nodes[node as usize].swa_uuid == Some(u))
+            {
+                break;
             }
             node = self.nodes[node as usize].parent.expect("walk reaches root");
         }
