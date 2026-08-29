@@ -196,6 +196,7 @@ from sglang.srt.managers.prefill_delayer import (
     PrefillDelayerSinglePassExecutor,
     RecentPrefillBatchSizeTracker,
 )
+from sglang.srt.managers.rust_scheduler import attach as rust_scheduler_attach
 from sglang.srt.managers.rust_server import RustServer
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
@@ -278,6 +279,7 @@ from sglang.srt.mem_cache.common import (
     release_kv_cache,
     retraction_discard,
 )
+from sglang.srt.mem_cache.rust_radix import wrap_if_rust
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_loader.utils import get_resolved_model_impl
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
@@ -579,6 +581,9 @@ class Scheduler(
         self.token_to_kv_pool_allocator = result.token_to_kv_pool_allocator
         self.disable_radix_cache = result.disable_radix_cache
         self.tree_cache = result.tree_cache
+        # Rust dual-write shadow (no-op unless SGLANG_RUST_SCHEDULER>=radix
+        # and the extension is available; returns the original cache else).
+        self.tree_cache = wrap_if_rust(self.tree_cache)
         if self.enable_hierarchical_cache:
             cache_controller = self.tree_cache.cache_controller
             if cache_controller is not None:
@@ -1319,6 +1324,9 @@ class Scheduler(
         )
 
         self.new_token_ratio_tracker = NewTokenRatioTracker.from_config()
+
+        # Rust CPU control plane (SGLANG_RUST_SCHEDULER); empty dict when off.
+        self.rust_drivers = rust_scheduler_attach(self)
 
     def init_soft_watchdog(self):
         if (x := get_device().soft_watchdog_timeout) is not None:
@@ -2903,6 +2911,7 @@ class Scheduler(
             self._prefetch_kvcache(req)
             self.waiting_queue.append(req)
             req.time_stats.set_wait_queue_entry_time()
+            self._rust_on_ingress(req)
         elif self.disaggregation_mode == DisaggregationMode.PREFILL:
             self._prefetch_kvcache(req)
             self.disagg_prefill_bootstrap_queue.add(
@@ -3191,6 +3200,54 @@ class Scheduler(
         return batch
 
     @scheduler_nvtx_method("scheduler.get_next_batch_to_run")
+    def _rust_plan_step(self, running_batch) -> None:
+        """Rust CPU control plane: shadow-plan + core bookkeeping on the
+        pre-decision snapshot (no-op when SGLANG_RUST_SCHEDULER=off)."""
+        drivers = getattr(self, "rust_drivers", None)
+        if not drivers:
+            return
+        shadow = drivers.get("shadow")
+        if shadow is not None:
+            shadow.shadow(running_batch)
+        core = drivers.get("core")
+        if core is not None:
+            core.plan(running_batch)
+
+    def _rust_finalize_plan(self, plan) -> None:
+        """Diff the pending Rust shadow plan against Python's decision."""
+        drivers = getattr(self, "rust_drivers", None)
+        if not drivers:
+            return
+        shadow = drivers.get("shadow")
+        if shadow is not None:
+            shadow.finalize(plan)
+
+    def _rust_on_ingress(self, req) -> None:
+        drivers = getattr(self, "rust_drivers", None)
+        if not drivers:
+            return
+        core = drivers.get("core")
+        if core is not None:
+            core.on_ingress(req)
+
+    def _rust_on_abort(self, rid: str) -> None:
+        drivers = getattr(self, "rust_drivers", None)
+        if not drivers:
+            return
+        core = drivers.get("core")
+        if core is not None:
+            core.on_abort(rid)
+
+    def _rust_apply_result(self, batch) -> None:
+        drivers = getattr(self, "rust_drivers", None)
+        if not drivers:
+            return
+        core = drivers.get("core")
+        if core is None:
+            return
+        if batch.forward_mode.is_decode() or batch.forward_mode.is_extend():
+            core.apply_result(batch)
+
     def get_next_batch_to_run(
         self, running_batch: ScheduleBatch, last_batch: Optional[ScheduleBatch]
     ) -> NextBatchPlan:
@@ -3280,6 +3337,8 @@ class Scheduler(
             if running_batch.is_empty():
                 running_batch.batch_is_full = False
 
+        self._rust_plan_step(running_batch)
+
         if self.dllm_config is not None:
             new_batch = self.get_new_batch_dllm(running_batch)
         elif self._should_defer_prefill():
@@ -3338,7 +3397,9 @@ class Scheduler(
             if self.enable_fpm:
                 ret.fpm_start_time = self._fpm_batch_t0
 
-        return NextBatchPlan(batch_to_run=ret, running_batch=running_batch)
+        plan = NextBatchPlan(batch_to_run=ret, running_batch=running_batch)
+        self._rust_finalize_plan(plan)
+        return plan
 
     def get_num_allocatable_reqs(
         self,
@@ -4233,6 +4294,7 @@ class Scheduler(
         elif batch.forward_mode.is_idle():
             self.batch_result_processor.process_batch_result_idle(batch, result)
 
+        self._rust_apply_result(batch)
         self._record_step_counters(batch, result)
 
         self.metrics_reporter.log_batch_result_stats(batch, result)
@@ -4826,6 +4888,7 @@ class Scheduler(
             # This only works for requests that have not started anything.
             # We still need to send something back to TokenizerManager to clean up the state.
             req = self.waiting_queue.pop(i)
+            self._rust_on_abort(req.rid)
             self.beam_coordinator.retire_group(req)
             if self.enable_hicache_storage:
                 # to release prefetch events associated with the request

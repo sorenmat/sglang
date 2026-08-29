@@ -520,6 +520,17 @@ impl RadixTree {
         Ok((r.indices, r.last_node))
     }
 
+    /// Shadow-check fast path: `(matched_len, last_node)` without building
+    /// the Python list of KV indices (the list conversion dominates cost
+    /// for long prompts; the dual-write facade only needs length + handle).
+    fn match_prefix_meta(&mut self, py: Python<'_>, keys: Vec<i64>) -> PyResult<(usize, u32)> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.match_prefix(&key)
+        });
+        Ok((r.indices.len(), r.last_node))
+    }
+
     /// `insert(keys, values, priority, chunked)` → `(prefix_len, last_node)`.
     fn insert(
         &mut self,

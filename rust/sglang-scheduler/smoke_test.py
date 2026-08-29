@@ -30,6 +30,9 @@ def main():
     assert p0 == 0, p0
     idx, node = t.match_prefix([1, 2, 9])
     assert idx == [10, 11], idx
+    mlen, mnode = t.match_prefix_meta([1, 2, 9])
+    assert (mlen, mnode) == (2, node), (mlen, mnode)
+    assert t.match_prefix_meta([7, 7, 7]) == (0, 0)
     p1, n1 = t.insert([1, 2, 9, 8], [20, 21, 22, 23], 0, False)
     assert p1 == 2, p1  # prefix 1,2 already in tree
     assert t.total_size() == 6, t.total_size()

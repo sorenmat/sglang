@@ -1590,6 +1590,28 @@ class Envs:
     # Build a missing Rust extension from source (auto), require a bundled or
     # cached extension (never), or rebuild the local cache entry (force).
     SGLANG_RUST_BUILD_MODE = EnvStr("auto")
+    # Rust CPU control plane (additive stages; each implies the previous):
+    # off | radix | planner | core | stream (see plan.md §"Flag design").
+    # `radix` runs the base RadixCache on the Rust tree; `planner` shadows the
+    # Rust next-batch decision against the Python one; `core` moves the
+    # queues/budgets/result bookkeeping into a persistent SchedulerCore;
+    # `stream` additionally moves per-iteration payload building into Rust.
+    SGLANG_RUST_SCHEDULER = EnvStr("off")
+    # When set, append one JSONL record per scheduler iteration (Python and
+    # Rust decisions, env snapshot, mismatch flags) to this path — the
+    # trace-capture/lossless-replay backbone of plan.md §4.2.
+    SGLANG_TRACE_SCHEDULER = EnvStr("")
+    # SGLANG_RUST_SCHEDULER=core only: let the Rust core's events be applied
+    # to the Python allocator/row pool (cutover mode, experimental).
+    # Default off — in bookkeeping mode Python executes its own batches and
+    # applies the same frees/writes itself; applying the core's events too
+    # would double-free.
+    SGLANG_RUST_CORE_APPLY = EnvStr("0")
+    # SGLANG_RUST_SCHEDULER=core only: trace exact KV index values into
+    # SGLANG_TRACE_SCHEDULER (lossless replay). Default off — zero-filled
+    # rows are traced, which is all the core's planning needs and avoids a
+    # CPU copy of every KV row on each decode step.
+    SGLANG_RUST_CORE_VALUES = EnvStr("0")
     # Most batched requests one /generate HTTP call may expand into.
     SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ = EnvInt(4096)
 
