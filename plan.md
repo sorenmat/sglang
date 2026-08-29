@@ -787,6 +787,25 @@ Done (this effort):
 - [x] Differential parity test `test/registered/rust/test_rust_radix_parity.py`
       (Rust `RadixTree` vs Python `RadixCache`, same op sequence); new crate
       added to the checked-in-crate discovery test.
+- [x] M5 (plan §8): stream frame builder + string-stop decisions in
+      `sglang-server` (`stream.rs` / `stream_py.rs` /
+      `tokenizer_manager/stop_check.rs`), `push_generation_frame` pybind +
+      `rust_server.push_generation` Rust path under `SGLANG_RUST_SCHEDULER=stream`,
+      `stream_bench` (M9) criterion benches, `test_rust_stream_parity.py`
+      (byte-parity frame + stop decisions + M9 p50 gate), `sglang-server-unit`
+      CI job. 264 `sglang-server` unit tests.
+- [x] M6 (plan §9): spec-v2 accept-run bookkeeping in `sglang-scheduler`
+      (`spec.rs`: `resolve_spec_runs` + `SpecCounters`), `ResultRow.spec`
+      metadata folded into `core.apply_result`, `resolve_spec_runs` /
+      `SpecCounters` / `SchedulerCore.spec_counters` pybind, the Rust branch of
+      `_resolve_spec_v2_tokens` under `SGLANG_RUST_SCHEDULER≥core`, spec rows in
+      the trace schema + lossless replay (synthetic session now carries a spec
+      row), `spec_bench` criterion benches, `test_rust_spec_parity.py`. 38
+      `sglang-scheduler` unit tests.
+- [x] M7 RFC content: `rust/rfc/0001-sglang-radix.md` +
+      `rust/rfc/0002-sglang-scheduler.md` (upstream contribution drafts —
+      the PRs themselves open on the target host, contribution order
+      `sglang-radix` → planner per §13).
 
 Remaining (needs the target GPU host, in plan order):
 1. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
@@ -798,3 +817,9 @@ Remaining (needs the target GPU host, in plan order):
    backbone of every later gate).
 3. Run the M3-style e2e A/B on the Qwen3.8 27B target: flat at c16 → stop;
    ≥2% throughput → continue to `core`/`stream` cutover.
+4. M7 default flip: run the full `test/srt` matrix at `core` (and `stream`)
+   on the target host; when green, move the `SGLANG_RUST_SCHEDULER` default
+   in `python/sglang/srt/environ.py` from `"off"` to the validated stage
+   (one line + the docstring; the staged flag makes it reversible).
+5. M7 upstream contribution: open the RFC PRs from `rust/rfc/` (0001
+   `sglang-radix` first, then 0002 `sglang-scheduler`), in plan order.
