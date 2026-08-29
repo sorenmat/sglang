@@ -150,6 +150,10 @@ struct CoreReq {
     finish_reason: u32,
     /// Committed KV row length (running / chunked).
     committed_len: u32,
+    /// The persistent admission lock is held on `last_node` (taken at
+    /// prefill admission, released at stash/finish/retract/drop). Waiting
+    /// reqs carry a `last_node` from plan-time scoring but no lock.
+    locked: bool,
     /// Spec-v2 counters (plan §9); live on spec-decode requests only.
     spec: SpecCounters,
 }
@@ -266,6 +270,12 @@ impl SchedulerCore {
         self.chunked
     }
 
+    /// The admitted-but-not-yet-merged set (joins `running` at the next
+    /// plan). Disjoint from waiting/running/chunked.
+    pub fn pending_merge(&self) -> &[u32] {
+        &self.pending_merge
+    }
+
     pub fn new_token_ratio(&self) -> f64 {
         self.ntr.current()
     }
@@ -290,6 +300,28 @@ impl SchedulerCore {
 
     pub fn req_out_len(&self, core_idx: u32) -> u32 {
         self.reqs[core_idx as usize].out.len() as u32
+    }
+
+    /// Committed KV row length (`origin + accepted so far`, partial for a
+    /// parked chunk).
+    pub fn req_committed_len(&self, core_idx: u32) -> u32 {
+        self.reqs[core_idx as usize].committed_len
+    }
+
+    pub fn req_finished(&self, core_idx: u32) -> bool {
+        self.reqs[core_idx as usize].finished
+    }
+
+    /// Tree-backed prefix length after admission: the row's `[0, prefix_len)`
+    /// views tree positions and is never row-allocated.
+    pub fn req_prefix_len(&self, core_idx: u32) -> u32 {
+        self.reqs[core_idx as usize].prefix_len
+    }
+
+    /// Page-aligned protected length (the row's `[0, protected_len)` is
+    /// tree-backed and excluded from any row free).
+    pub fn req_protected_len(&self, core_idx: u32) -> u32 {
+        self.reqs[core_idx as usize].protected_len
     }
 
     /// Spec-v2 counters for a live request (plan §9).
@@ -324,6 +356,7 @@ impl SchedulerCore {
                 finished: false,
                 finish_reason: 0,
                 committed_len: 0,
+                locked: false,
                 spec: SpecCounters::default(),
             });
             if idx as usize != self.reqs.len() - 1 {
@@ -444,6 +477,7 @@ impl SchedulerCore {
             let r = &mut self.reqs[core_idx as usize];
             r.finished = true;
             r.finish_reason = reason;
+            r.locked = false;
         }
         events.push(Event::Finished {
             core_idx,
@@ -499,6 +533,7 @@ impl SchedulerCore {
         r.last_node = new_last;
         r.prefix_len = new_protected;
         r.protected_len = new_protected;
+        r.locked = new_last != ROOT;
     }
 
     /// User-initiated abort (Python `abort_request`): drop the request from
@@ -524,17 +559,20 @@ impl SchedulerCore {
         if self.chunked == Some(core_idx) {
             self.chunked = None;
         }
-        let (pool_idx, committed, last_node) = {
+        let (pool_idx, committed, protected, last_node, locked) = {
             let r = &self.reqs[core];
-            (r.pool_idx, r.committed_len, r.last_node)
+            (r.pool_idx, r.committed_len, r.protected_len, r.last_node, r.locked)
         };
-        if last_node != ROOT {
+        // Only admitted reqs hold the lock; waiting reqs carry a scored
+        // `last_node` without it (Python's queue abort touches no tree lock).
+        if locked && last_node != ROOT {
             self.tree.dec_lock_ref(last_node);
         }
-        if committed > 0 {
+        // Same ownership split as retraction: the tree keeps [0, protected).
+        if committed > protected {
             events.push(Event::FreeSegments {
                 pool_idx,
-                ranges: vec![(0, committed)],
+                ranges: vec![(protected, committed)],
             });
         }
         let out_len = {
@@ -556,6 +594,21 @@ impl SchedulerCore {
     /// The next-batch decision (ingress + results already applied).
     pub fn plan(&mut self, env: &StepEnv) -> StepOut {
         let mut events = Vec::new();
+
+        // 0. `filter_batch()`: finished reqs leave the running batch after
+        //    every result pass, before any plan (Python drops them in
+        //    `process_batch_result`, not on the next decode plan).
+        if self.running.iter().any(|&i| self.reqs[i as usize].finished) {
+            let mut kept: Vec<u32> = Vec::new();
+            for i in self.running.drain(..) {
+                if self.reqs[i as usize].finished {
+                    self.free.push(i);
+                } else {
+                    kept.push(i);
+                }
+            }
+            self.running = kept;
+        }
 
         // 1. Merge the last prefill batch into running (Python: the
         //    `last_batch` extend-merge). Finished reqs never join; the
@@ -676,18 +729,17 @@ impl SchedulerCore {
             let new_chunked = p.chunked.filter(|&w| w != CHUNKED_IDX);
             let mut pending: Vec<u32> = Vec::new();
 
-            let admitted_pos: HashSet<u32> = p
+            // Remove the admitted reqs from `waiting` by *core index*, not
+            // by snap position: under DfsWeight the snap (and
+            // `waiting_cores`) is permuted, so `a.waiting_idx` is a position
+            // in the permuted order, not in `self.waiting`.
+            let admitted_cores: HashSet<u32> = p
                 .admitted
                 .iter()
                 .filter(|a| a.waiting_idx != CHUNKED_IDX)
-                .map(|a| a.waiting_idx)
+                .map(|a| waiting_cores[a.waiting_idx as usize])
                 .collect();
-            let mut pos = 0usize;
-            self.waiting.retain(|_| {
-                let keep = !admitted_pos.contains(&(pos as u32));
-                pos += 1;
-                keep
-            });
+            self.waiting.retain(|&c| !admitted_cores.contains(&c));
 
             for a in &p.admitted {
                 if a.waiting_idx == CHUNKED_IDX {
@@ -715,6 +767,7 @@ impl SchedulerCore {
                     if r.last_node != ROOT {
                         self.tree.inc_lock_ref(r.last_node);
                     }
+                    r.locked = r.last_node != ROOT;
                 }
                 last_batch.push(core);
                 if Some(a.waiting_idx) == new_chunked {
@@ -765,19 +818,24 @@ impl SchedulerCore {
                     let r = &mut self.reqs[core as usize];
                     let pool_idx = r.pool_idx;
                     let committed = r.committed_len;
+                    let protected = r.protected_len;
                     let last_node = r.last_node;
                     r.retracted_stain = true;
                     r.committed_len = 0;
                     r.prefix_len = 0;
                     r.last_node = ROOT;
                     r.protected_len = 0;
+                    r.locked = false;
                     if last_node != ROOT {
                         self.tree.dec_lock_ref(last_node);
                     }
-                    if committed > 0 {
+                    // Python `release_kv_cache(is_insert=False)` frees
+                    // [cache_protected_len, committed) only: [0, protected)
+                    // is tree-owned and stays in the tree.
+                    if committed > protected {
                         events.push(Event::FreeSegments {
                             pool_idx,
-                            ranges: vec![(0, committed)],
+                            ranges: vec![(protected, committed)],
                         });
                     }
                 }
@@ -787,23 +845,34 @@ impl SchedulerCore {
             // Aborted reqs: free the row, release the lock, recycle the slot.
             for &i in &d.abort {
                 let core = running_cores[i as usize];
-                let (pool_idx, committed, last_node, out_len) = {
+                let (pool_idx, committed, protected, last_node, out_len) = {
                     let r = &self.reqs[core as usize];
-                    (r.pool_idx, r.committed_len, r.last_node, r.out.len() as u32)
+                    (
+                        r.pool_idx,
+                        r.committed_len,
+                        r.protected_len,
+                        r.last_node,
+                        r.out.len() as u32,
+                    )
                 };
                 if last_node != ROOT {
                     self.tree.dec_lock_ref(last_node);
                 }
-                if committed > 0 {
+                // Same ownership split as retraction: the tree keeps
+                // [0, protected); the row frees the rest. (Python's abort
+                // finish would additionally insert the prefix, but the core
+                // has no row values at plan time, so it skips the insert.)
+                if committed > protected {
                     events.push(Event::FreeSegments {
                         pool_idx,
-                        ranges: vec![(0, committed)],
+                        ranges: vec![(protected, committed)],
                     });
                 }
                 {
                     let r = &mut self.reqs[core as usize];
                     r.finished = true;
                     r.finish_reason = 4; // abort
+                    r.locked = false;
                 }
                 events.push(Event::Finished {
                     core_idx: core,
@@ -855,6 +924,482 @@ impl SchedulerCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plan §12: fuzz `core.step` with random ingress + result sequences.
+    /// Invariants: no double-free of KV pages or row segments, tree lock
+    /// counts stay consistent (a u32 underflow panics in debug), plan
+    /// allocations never exceed the free pool, and identical op sequences
+    /// replay deterministically.
+    #[test]
+    fn fuzz_core_step_invariants() {
+        for &seed in &[0x5eed, 0xc0de] {
+            for (policy, priority) in [
+                (Policy::Fcfs, false),
+                (Policy::Lpm, false),
+                (Policy::DfsWeight, false),
+                (Policy::Lof, true),
+                (Policy::Fcfs, true),
+                (Policy::Lpm, true),
+            ] {
+                let a = fuzz_once(seed, policy, priority);
+                let b = fuzz_once(seed, policy, priority);
+                assert_eq!(a, b, "seed {seed:#x} policy {policy:?}: deterministic replay diverged");
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct FuzzSnap {
+        plan: BatchPlan,
+        events: Vec<Event>,
+        waiting: Vec<u32>,
+        running: Vec<u32>,
+        chunked: Option<u32>,
+        tree: (i64, i64, i64),
+        ntr: f64,
+    }
+
+    fn fuzz_once(seed: u64, policy: Policy, priority: bool) -> Vec<FuzzSnap> {
+        let page = 8u32;
+        let cfg = Config {
+            policy,
+            page_size: page,
+            max_prefill_tokens: 512,
+            chunked_prefill_size: Some(128),
+            mixed_chunk: true,
+            priority_scheduling: priority,
+            ..Config::default()
+        };
+        let mut core = SchedulerCore::new(cfg, EvictionPolicy::Lru);
+
+        let mut rng = seed;
+        let mut nx = |n: u64| -> u64 {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+
+        let mut snaps: Vec<FuzzSnap> = Vec::new();
+        // Pooled-KV model: `allocated` = live values, `evicted` = freed by
+        // Evict events (each value may be evicted at most once), `owned` =
+        // per-row token offsets backed by the req's own allocation (the
+        // tree-backed prefix is tracked loosely).
+        let mut next_val: i64 = 1;
+        let mut next_tok: u64 = 0;
+        let mut next_pool: u32 = 0;
+        let mut next_arrival: u64 = 0;
+        let mut allocated: HashSet<i64> = HashSet::new();
+        let mut evicted: HashSet<i64> = HashSet::new();
+        let mut vals: Vec<Vec<i64>> = Vec::new();
+        let mut committed: Vec<u32> = Vec::new();
+        let mut owned: Vec<HashSet<u32>> = Vec::new();
+        let mut avail: i64 = 2048;
+        let mut batch_is_full = false;
+        let mut last_mode: u8 = 0;
+        let mut last_decode_like: HashSet<u32> = HashSet::new();
+
+        // Prefix banks: banks 0..=3 share a 32-token head, so repeated and
+        // re-queued origins re-match the tree.
+        let head: Vec<i64> = (0..32).map(|i| (1 + i * 7) as i64).collect();
+        let banks: Vec<Vec<i64>> = (0..8)
+            .map(|b| {
+                let mut v = head.clone();
+                for i in 0..(40 + b * 16) {
+                    v.push(100 + b as i64 * 500 + i as i64);
+                }
+                v
+            })
+            .collect();
+
+        for iter in 0..200 {
+            // 1. Apply the previous batch's results (driver order: apply the
+            //    last batch, then plan the next one).
+            if !core.last_batch().is_empty() {
+                let batch = core.last_batch().to_vec();
+                let mut rows: Vec<ResultRow> = Vec::with_capacity(batch.len());
+                for &c in &batch {
+                    let is_decode =
+                        last_mode == crate::types::MODE_DECODE || last_decode_like.contains(&c);
+                    let mut accepted = Vec::new();
+                    if is_decode {
+                        accepted.push(2_000_000 + next_tok as i64);
+                        next_tok += 1;
+                        // The decode token's page was row-allocated at
+                        // plan time (plan_decode reserved it), so the
+                        // ownership lands before the apply's events are
+                        // checked — the finish path may free the
+                        // just-committed tail immediately.
+                        let before = committed[c as usize];
+                        committed[c as usize] = before + accepted.len() as u32;
+                        let pool = core.req_pool_idx(c);
+                        for off in before..committed[c as usize] {
+                            owned[pool as usize].insert(off);
+                            let v = next_val;
+                            next_val += 1;
+                            allocated.insert(v);
+                            vals[c as usize].push(v);
+                        }
+                    }
+                    let finished_row = is_decode && nx(8) == 0;
+                    let spec = if is_decode && nx(5) == 0 {
+                        Some(ResultSpec {
+                            accept_len: 2 + nx(3) as u32,
+                            settled: true,
+                            block_accept_len: (nx(2) == 0).then(|| 1 + nx(3) as u32),
+                            cap_len: (nx(2) == 0).then(|| 1 + nx(3) as u32),
+                        })
+                    } else {
+                        None
+                    };
+                    rows.push(ResultRow {
+                        accepted,
+                        finished: finished_row,
+                        finish_reason: if finished_row { 1 + nx(2) as u32 } else { 0 },
+                        spec,
+                    });
+                }
+                // KV rows come after the committed update: a finished row's
+                // full row includes the just-accepted token's slot.
+                let mut kv: Vec<KvRow> = Vec::new();
+                for (i, &c) in batch.iter().enumerate() {
+                    if rows[i].finished
+                        || (last_mode == crate::types::MODE_PREFILL
+                            && !last_decode_like.contains(&c)
+                            && committed[c as usize] > 0)
+                    {
+                        kv.push(KvRow {
+                            core_idx: c,
+                            row: vals[c as usize][..committed[c as usize] as usize].to_vec(),
+                        });
+                    }
+                }
+                let events = core.apply_result(&rows, &kv);
+                check_fuzz_events(&core, &events, &allocated, &mut evicted, &mut owned, &committed);
+                // Drift guard: the fuzz's committed tracking must follow the
+                // core's, else the ownership model goes blind.
+                for &c in &batch {
+                    if committed[c as usize] != core.req_committed_len(c) {
+                        panic!(
+                            "iter {iter}: committed drift on req {c}: fuzz {} core {}; last_mode={last_mode} decode_like={:?} accepted: {:?}",
+                            committed[c as usize],
+                            core.req_committed_len(c),
+                            last_decode_like,
+                            rows.iter().map(|r| r.accepted.len()).collect::<Vec<_>>()
+                        );
+                    }
+                }
+            }
+
+            // 2. Ingress (0..=3 reqs).
+            for _ in 0..(if nx(4) == 0 { 0 } else { 1 + nx(3) }) {
+                let bank = &banks[nx(8) as usize];
+                let min_n = 8u64.min(bank.len() as u64);
+                let n = (min_n + nx(bank.len() as u64 - min_n + 1)).min(bank.len() as u64) as usize;
+                let mut origin = bank[..n].to_vec();
+                if nx(10) == 0 {
+                    for _ in 0..(1 + nx(24)) {
+                        origin.push(1_000_000 + next_tok as i64);
+                        next_tok += 1;
+                    }
+                }
+                let req = IngressReq {
+                    rid: next_pool as u64 + 1,
+                    pool_idx: next_pool,
+                    origin,
+                    max_new_tokens: 2 + nx(47) as u32,
+                    priority: nx(4) as i32,
+                    arrival_seq: next_arrival,
+                    routing_key: nx(2),
+                    ignore_eos: nx(20) == 0,
+                };
+                next_arrival += 1;
+                next_pool += 1;
+                let c = core.ingest(vec![req])[0];
+                // Slot recycling: a recycled core idx keeps its stale
+                // vectors — reset them. Pool idxs are never recycled, so
+                // `owned` (keyed by pool) just grows.
+                while vals.len() <= c as usize {
+                    vals.push(Vec::new());
+                    committed.push(0);
+                }
+                vals[c as usize].clear();
+                committed[c as usize] = 0;
+                owned.push(HashSet::new());
+            }
+
+            // 3. Random abort of a WAITING request — the driver's contract
+            //    (Python aborts from the waiting queue; running reqs finish
+            //    through results).
+            if nx(10) == 0 {
+                let w = core.waiting().to_vec();
+                if !w.is_empty() {
+                    let events = core.drop_request(w[nx(w.len() as u64) as usize]);
+                    check_fuzz_events(&core, &events, &allocated, &mut evicted, &mut owned, &committed);
+                }
+            }
+
+            // 4. Plan.
+            let evictable_live = core.tree().evictable_size();
+            let pre_waiting: Vec<u32> = core.waiting().to_vec();
+            let pre_running: Vec<u32> = core.running().to_vec();
+            let pre_chunked = core.chunked_idx();
+            let committed_before: Vec<u32> =
+                pre_running.iter().map(|&c| core.req_committed_len(c)).collect();
+            avail = (avail + nx(601) as i64 - 300).clamp(0, 4096);
+            if nx(7) == 0 {
+                avail = 0; // memory pressure
+            }
+            let e = StepEnv {
+                allocator_avail_tokens: avail as u32,
+                tree_evictable_tokens: evictable_live.max(0) as u32,
+                num_allocatable_reqs: if nx(10) == 0 { nx(3) as u32 } else { u32::MAX },
+                batch_is_full,
+                mixed_chunk_allowed: nx(7) != 0,
+            };
+            let out = core.plan(&e);
+            batch_is_full = out.plan.batch_is_full;
+            last_mode = out.plan.mode;
+            last_decode_like = if out.plan.prefill.as_ref().is_some_and(|p| p.mixed) {
+                pre_running
+                    .iter()
+                    .copied()
+                    .filter(|c| !core.req_finished(*c))
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+
+            // 5. Plan invariants.
+            let pool_budget = avail + evictable_live.max(0);
+            if let Some(p) = &out.plan.prefill {
+                assert!(
+                    p.extend_tokens as i64 <= pool_budget,
+                    "prefill extends {} tokens > free pool {pool_budget} (avail {avail}, evictable {evictable_live})",
+                    p.extend_tokens
+                );
+            }
+            if let Some(d) = &out.plan.decode {
+                let freed: i64 = d
+                    .retract
+                    .iter()
+                    .chain(d.abort.iter())
+                    .map(|&i| committed_before[i as usize] as i64)
+                    .sum();
+                assert!(
+                    d.alloc_decode_pages as i64 * page as i64 <= pool_budget + freed,
+                    "decode alloc {} pages ({}) > free pool {pool_budget} + retracted {freed}",
+                    d.alloc_decode_pages,
+                    d.alloc_decode_pages as i64 * page as i64
+                );
+                assert!(
+                    d.evict_tokens as i64 <= evictable_live.max(0),
+                    "decode evicts {} tokens but only {evictable_live} are evictable",
+                    d.evict_tokens
+                );
+            }
+
+            // 6. Row-value bookkeeping (diff-based: policy reordering is
+            //    opaque, so read committed lengths after the plan).
+            for c in &pre_waiting {
+                let after = core.req_committed_len(*c);
+                if after > 0 {
+                    let pool = core.req_pool_idx(*c);
+                    for _ in vals[*c as usize].len() as u32..after {
+                        let v = next_val;
+                        next_val += 1;
+                        allocated.insert(v);
+                        vals[*c as usize].push(v);
+                    }
+                    // [0, prefix_len) is tree-backed (row views of tree
+                    // positions); only the row-allocated tail is owned.
+                    let prefix = core.req_prefix_len(*c);
+                    for off in prefix.min(after)..after {
+                        owned[pool as usize].insert(off);
+                    }
+                }
+                committed[*c as usize] = after;
+            }
+            if let Some(c) = pre_chunked {
+                let after = core.req_committed_len(c);
+                let before = committed[c as usize];
+                if after > before {
+                    let pool = core.req_pool_idx(c);
+                    for off in before..after {
+                        owned[pool as usize].insert(off);
+                        let v = next_val;
+                        next_val += 1;
+                        allocated.insert(v);
+                        vals[c as usize].push(v);
+                    }
+                }
+                committed[c as usize] = after;
+            }
+
+            // 7. Queue hygiene: no finished req queued anywhere; sets
+            //    disjoint.
+            let mut queued: Vec<u32> = core.waiting().to_vec();
+            queued.extend_from_slice(core.running());
+            queued.extend_from_slice(core.pending_merge());
+            if let Some(c) = core.chunked_idx() {
+                queued.push(c);
+            }
+            let mut seen: HashSet<u32> = HashSet::new();
+            for c in &queued {
+                assert!(!core.req_finished(*c), "finished req {c} still queued");
+                if !seen.insert(*c) {
+                    panic!(
+                        "req {c} in two queues: waiting={} running={} pending={} chunked={:?}",
+                        core.waiting().contains(c),
+                        core.running().contains(c),
+                        core.pending_merge().contains(c),
+                        core.chunked_idx()
+                    );
+                }
+            }
+
+            check_fuzz_events(&core, &out.events, &allocated, &mut evicted, &mut owned, &committed);
+
+            snaps.push(FuzzSnap {
+                plan: out.plan,
+                events: out.events,
+                waiting: core.waiting().to_vec(),
+                running: core.running().to_vec(),
+                chunked: core.chunked_idx(),
+                tree: (
+                    core.tree().evictable_size(),
+                    core.tree().protected_size(),
+                    core.tree().total_size(),
+                ),
+                ntr: core.new_token_ratio(),
+            });
+        }
+        snaps
+    }
+
+    /// Fuzz-side event model for `fuzz_once`: `allocated`/`evicted` track
+    /// pooled KV values (each may be evicted at most once); `owned` tracks,
+    /// per row, which token offsets are backed by the req's own allocation.
+    fn check_fuzz_events(
+        core: &SchedulerCore,
+        events: &[Event],
+        allocated: &HashSet<i64>,
+        evicted: &mut HashSet<i64>,
+        owned: &mut [HashSet<u32>],
+        committed: &[u32],
+    ) {
+        let dump = |msg: &str| -> ! {
+            let mut lines: Vec<String> = vec![msg.to_string()];
+            lines.push(format!(
+                "waiting={:?} running={:?} chunked={:?}",
+                core.waiting(),
+                core.running(),
+                core.chunked_idx()
+            ));
+            for &c in core.waiting().iter().chain(core.running().iter()) {
+                lines.push(format!(
+                    "req {c}: pool={} core_committed={} fuzz_committed={} protected={} prefix={} finished={}",
+                    core.req_pool_idx(c),
+                    core.req_committed_len(c),
+                    committed.get(c as usize).copied().unwrap_or(u32::MAX),
+                    core.req_protected_len(c),
+                    core.req_prefix_len(c),
+                    core.req_finished(c)
+                ));
+            }
+            panic!("{}", lines.join("\n"));
+        };
+        for ev in events {
+            match ev {
+                Event::Evict { values } => {
+                    for run in values {
+                        for &v in run {
+                            assert!(
+                                allocated.contains(&v),
+                                "evicted a value that was never allocated: {v}"
+                            );
+                            assert!(
+                                evicted.insert(v),
+                                "double-free of KV page {v} via Evict"
+                            );
+                        }
+                    }
+                }
+                Event::FreeSegments { pool_idx, ranges } => {
+                    let o = &mut owned[*pool_idx as usize];
+                    for (s, e) in ranges {
+                        for off in *s..*e {
+                            if !o.remove(&off) {
+                                dump(&format!(
+                                    "double-free of row segment [{s}, {e}) of pool {pool_idx}: offset {off} not row-owned"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Event::StashRowWrite {
+                    pool_idx,
+                    start,
+                    new_indices,
+                } => {
+                    // The row now views tree values over [start, start+len).
+                    // The duplicate part [protected, new_prefix) was freed
+                    // by the paired FreeSegments; the absorbed tail
+                    // ([new_prefix, ...)) moved into the tree, so neither is
+                    // row-owned any more.
+                    let o = &mut owned[*pool_idx as usize];
+                    for off in *start..*start + new_indices.len() as u32 {
+                        o.remove(&off);
+                    }
+                }
+                Event::Finished { .. } => {}
+            }
+        }
+    }
+
+    #[test]
+    fn drop_waiting_matched_prefix_underflows_lock() {
+        let mut core = SchedulerCore::new(cfg(), EvictionPolicy::Lru);
+        let a = core.ingest(vec![IngressReq {
+            rid: 1,
+            pool_idx: 0,
+            origin: origin(64, 1),
+            max_new_tokens: 4,
+            priority: 0,
+            arrival_seq: 0,
+            routing_key: 0,
+            ignore_eos: false,
+        }]);
+        core.plan(&env());
+        core.apply_result(
+            &[ResultRow {
+                accepted: vec![],
+                finished: true,
+                finish_reason: 1,
+                spec: None,
+            }],
+            &[kv_row(a[0], 64, 400)],
+        );
+        // Second req shares the prefix; keep it WAITING (0 allocatable) so the
+        // plan scores it (last_node = the shared node) but never locks it.
+        let b = core.ingest(vec![IngressReq {
+            rid: 2,
+            pool_idx: 1,
+            origin: origin(64, 1),
+            max_new_tokens: 4,
+            priority: 0,
+            arrival_seq: 1,
+            routing_key: 0,
+            ignore_eos: false,
+        }]);
+        let e = StepEnv {
+            num_allocatable_reqs: 0,
+            ..env()
+        };
+        core.plan(&e);
+        assert!(!core.waiting().is_empty());
+        let _ = core.drop_request(b[0]);
+    }
 
     fn cfg() -> Config {
         Config::default()
@@ -982,14 +1527,16 @@ mod tests {
         );
         // The finished req's KV is now in the tree.
         assert!(core.tree().total_size() >= 32);
-        // It stays in running until the decode filter removes it.
+        // It stays in running until the next plan's head-filter removes it
+        // (Python `filter_batch()` runs before every plan).
         assert_eq!(core.running().len(), 2);
 
-        // Next plan: decode filters the finished req out.
+        // Next plan: the head-filter drops the finished req before the
+        // planner sees it, so `finished_removed` is empty.
         let out = core.plan(&env());
         let d = out.plan.decode.as_ref().unwrap();
         assert_eq!(d.decode.len(), 1);
-        assert_eq!(d.finished_removed, vec![1]);
+        assert!(d.finished_removed.is_empty());
         assert_eq!(core.running(), &[idx[0]]);
     }
 
@@ -1134,24 +1681,21 @@ mod tests {
         assert_eq!(core.running(), &[idx[1]]);
         assert_eq!(core.tree().protected_size(), 16);
 
-        // Running drop: free the whole KV row, release the admission lock.
+        // Running drop: the prefill stash tree-backed the whole row
+        // (protected == committed == 16), so nothing row-allocated is freed;
+        // releasing the admission lock makes the 16 tokens evictable.
         let events = core.drop_request(idx[1]);
         assert_eq!(
             events,
-            vec![
-                Event::FreeSegments {
-                    pool_idx: 1,
-                    ranges: vec![(0, 16)]
-                },
-                Event::Finished {
-                    core_idx: idx[1],
-                    reason: 4,
-                    out_len: 1
-                },
-            ]
+            vec![Event::Finished {
+                core_idx: idx[1],
+                reason: 4,
+                out_len: 1
+            }]
         );
         assert!(core.running().is_empty());
         assert_eq!(core.tree().protected_size(), 0);
+        assert_eq!(core.tree().evictable_size(), 16);
 
         // Slot recycling: the dropped slot (LIFO free stack) is reused.
         let idx2 = core.ingest(vec![IngressReq {
@@ -1321,7 +1865,12 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(frees, vec![(1, vec![(0, 128)])]);
+        // The prefill stash tree-backed the whole row (protected ==
+        // committed == 128), so Python's retraction
+        // `release_kv_cache(is_insert=False)` frees
+        // [cache_protected_len, committed) = the empty range: the KV stays
+        // in the tree, where it is evictable.
+        assert!(frees.is_empty());
         // NTR took the post-retract estimate over the survivor:
         // (1 + 20) / (16 + 1) -> capped 1.0.
         assert_eq!(core.new_token_ratio(), 1.0);

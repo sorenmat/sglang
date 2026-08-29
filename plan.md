@@ -707,6 +707,25 @@ Not scheduled; decision is data-driven from Phase 3 profiling.
   `core.step` with random ingress + result sequences (assert invariants:
   no double-free of pages, lock counts ≥ 0, plan allocs ≤ free pages,
   deterministic replay).
+  In place: `fuzz_core_step_invariants` (`sglang-scheduler`, 2 seeds × 6
+  policy/priority variants × 200 steps) simulates KV ownership at value
+  level — `allocated`/`evicted` page sets catch double-frees through
+  `Evict`/`FreeSegments`, per-pool `owned` offset sets catch row-segment
+  double-frees and encode the tree-backed `[0, protected)` split — plus
+  queue hygiene (waiting/running/pending_merge/chunked disjoint, no
+  finished req queued), the plan budget invariants, and deterministic
+  replay. It found four real core bugs (all fixed):
+  (1) `drop_request` could underflow a tree lock ref for scored waiting
+  reqs (they carry a plan-time `last_node` without the admission lock —
+  now tracked with `CoreReq.locked`); (2) the retract/abort/drop paths
+  freed `[0, committed)` where Python's `release_kv_cache` frees only
+  `[cache_protected_len, committed)` — a double-free of the tree-owned
+  prefix; (3) the admitted-req `waiting`-queue `retain` indexed the
+  planner's snap positions against the original queue order, which diverge
+  under DFS_WEIGHT (a req ended up in `waiting` + `pending_merge`);
+  (4) finished reqs lingered in `running` across a non-mixed prefill plan
+  (Python's `filter_batch()` drops them before every plan — now a
+  plan-head filter in `core.plan`).
 - **Parity (the backbone):** scripted-replay trace diffing (§4.2) — plans,
   cache-op logs, egress frames — on the canonical sessions, run in CI
   (small session) and nightly (full sessions).
@@ -819,6 +838,20 @@ Done (this effort):
       `display_name` inputs; prebuilt ext via the `rust-ext-build`
       artifact). `stream` stays host-gated: it implies `SGLANG_RUST_SERVER`
       and gates the flip itself.
+- [x] M7 §12 `core.step` fuzz: `fuzz_core_step_invariants` in
+      `sglang-scheduler` (value-level KV-ownership simulation + queue
+      hygiene + plan-budget invariants + deterministic replay). Found and
+      fixed four core bugs: `drop_request` lock underflow on scored
+      waiting reqs (`CoreReq.locked`); retract/abort/drop freeing
+      `[0, committed)` instead of Python's `[protected, committed)`
+      (tree-prefix double-free); the DFS_WEIGHT admitted-req `retain`
+      using snap positions against the original `waiting` order; and
+      finished reqs lingering in `running` across a non-mixed prefill
+      plan (now a plan-head `filter_batch`). Three unit tests that had
+      encoded the old free-all-row behavior were updated to the
+      corrected semantics; workspace stays green
+      (`cargo test --workspace`, `cargo clippy --workspace --all-targets
+      -- -D warnings`).
 
 Remaining (needs the target GPU host, in plan order):
 1. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
