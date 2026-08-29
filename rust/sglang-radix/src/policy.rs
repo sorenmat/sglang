@@ -73,19 +73,30 @@ impl EvictionPolicy {
         }
     }
 
-    /// Eviction priority; smaller values are evicted first.
+    /// Eviction priority over the full `RawNode` (base tree).
+    pub fn prio(&self, node: &RawNode) -> Prio {
+        self.prio_fields(node.id, node.last_access, node.hit_count, node.priority)
+    }
+
+    /// Eviction priority from raw fields (used by the tree variants whose
+    /// node type is not `RawNode`, e.g. the HiRadix host-tier tree).
     ///
     /// Node fields: `last_access` (u64 walk clock), `hit_count`,
     /// `priority`, `id` (creation order).
-    pub fn prio(&self, node: &RawNode) -> Prio {
-        let id = node.id;
-        let la = clamp_u64(node.last_access);
+    pub fn prio_fields(
+        &self,
+        id: u32,
+        last_access: u64,
+        hit_count: u64,
+        priority: i32,
+    ) -> Prio {
+        let la = clamp_u64(last_access);
         match self {
             // `last_access_time`
             Self::Lru => Prio { a: la, b: 0, c: id },
             // `(hit_count, last_access_time)`
             Self::Lfu => Prio {
-                a: clamp_u64(node.hit_count),
+                a: clamp_u64(hit_count),
                 b: la,
                 c: id,
             },
@@ -105,13 +116,13 @@ impl EvictionPolicy {
             },
             // `(priority, last_access_time)`
             Self::Priority => Prio {
-                a: node.priority as i64,
+                a: priority as i64,
                 b: la,
                 c: id,
             },
             // `(0/1 segment, last_access_time)`
             Self::Slru { threshold } => Prio {
-                a: i64::from(node.hit_count >= *threshold),
+                a: i64::from(hit_count >= *threshold),
                 b: la,
                 c: id,
             },

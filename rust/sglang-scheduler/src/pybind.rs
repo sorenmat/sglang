@@ -898,6 +898,322 @@ impl MambaRadixTree {
     }
 }
 
+// ------------------------------------------------------------ HiRadix tree
+
+/// Python facade backing for `HiRadixCache` (host-tier cache). The DMA /
+/// controller side stays in Python; the tree reports the runs to free and
+/// the pending write-through state, and exposes the two-phase
+/// load-back + backup primitives the facade drives.
+#[pyclass]
+struct HiRadixTree {
+    tree: sglang_radix::HiRadixTree,
+}
+
+#[pymethods]
+impl HiRadixTree {
+    #[new]
+    fn new(
+        page_size: u32,
+        is_eagle: bool,
+        write_policy: &str,
+        eviction_policy: &str,
+        write_through_threshold: u32,
+        load_back_threshold: u32,
+    ) -> PyResult<Self> {
+        let policy = sglang_radix::HiPolicy::parse(write_policy).map_err(PyValueError::new_err)?;
+        let strategy =
+            EvictionPolicy::parse(eviction_policy).map_err(PyValueError::new_err)?;
+        Ok(Self {
+            tree: sglang_radix::HiRadixTree::new(
+                page_size as usize,
+                is_eagle,
+                policy,
+                strategy,
+                write_through_threshold as u64,
+                load_back_threshold as usize,
+            ),
+        })
+    }
+
+    fn reset(&mut self) {
+        self.tree.reset();
+    }
+
+    /// `match_prefix(keys)` →
+    /// `(indices, last_device_node, last_host_node, host_hit_length,
+    /// splits)`; each split is `(front, tail)`.
+    fn match_prefix(
+        &mut self,
+        py: Python<'_>,
+        keys: Vec<i64>,
+    ) -> PyResult<(Vec<i64>, u32, u32, u32, Vec<(u32, u32)>)> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.match_prefix(&key)
+        });
+        Ok((
+            r.indices,
+            r.last_device_node,
+            r.last_host_node,
+            u32::try_from(r.host_hit_length).unwrap_or(u32::MAX),
+            r.splits,
+        ))
+    }
+
+    /// `insert(keys, values, priority, chunked)` →
+    /// `(prefix_len, last_node, backup_needed, splits)`.
+    /// `backup_needed` lists the nodes that crossed the write-through
+    /// threshold without a backup: run the host DMA, then
+    /// `begin_backup(node, host_indices, lock=True)`.
+    fn insert(
+        &mut self,
+        py: Python<'_>,
+        keys: Vec<i64>,
+        values: Vec<i64>,
+        priority: i32,
+        chunked: bool,
+    ) -> PyResult<(u32, u32, Vec<u32>, Vec<(u32, u32)>)> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.insert(&key, &values, priority, chunked)
+        });
+        Ok((
+            u32::try_from(r.prefix_len).unwrap_or(u32::MAX),
+            r.last_node,
+            r.backup_needed,
+            r.splits,
+        ))
+    }
+
+    /// `insert_host(start_node, keys, host_value)` → matched length
+    /// (the caller frees the overlapping host indices of the prefetch).
+    fn insert_host(
+        &mut self,
+        py: Python<'_>,
+        start_node: u32,
+        keys: Vec<i64>,
+        host_value: Vec<i64>,
+    ) -> PyResult<u32> {
+        let n = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.insert_host(start_node, &key, &host_value)
+        });
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    /// `evict(num_tokens)` → `(num_evicted, free_device)` (write-through
+    /// loop; the caller releases each device run).
+    fn evict(&mut self, py: Python<'_>, num_tokens: u32) -> PyResult<(u32, Vec<Vec<i64>>)> {
+        let r = py.detach(|| self.tree.evict(num_tokens as usize));
+        Ok((
+            u32::try_from(r.num_tokens_evicted).unwrap_or(u32::MAX),
+            r.free_device,
+        ))
+    }
+
+    /// `evict_host(num_tokens)` →
+    /// `(num_evicted, free_host, deleted_node_ids)`.
+    fn evict_host(
+        &mut self,
+        py: Python<'_>,
+        num_tokens: u32,
+    ) -> PyResult<(u32, Vec<Vec<i64>>, Vec<u32>)> {
+        let r = py.detach(|| self.tree.evict_host(num_tokens as usize));
+        Ok((
+            u32::try_from(r.num_tokens_evicted).unwrap_or(u32::MAX),
+            r.free_host,
+            r.deleted,
+        ))
+    }
+
+    /// Phase 1 of `load_back`: `init_load_back(last_node, mem_quota)` →
+    /// `(ancestor, last_node, nodes, host_indices)` or `None` when the
+    /// load was skipped (threshold / quota / already live).
+    fn init_load_back(
+        &mut self,
+        last_node: u32,
+        mem_quota: Option<i64>,
+    ) -> Option<(u32, u32, Vec<u32>, Vec<i64>)> {
+        self.tree.init_load_back(last_node, mem_quota).map(|p| {
+            (
+                p.ancestor,
+                p.last_node,
+                p.nodes.clone(),
+                p.host_indices,
+            )
+        })
+    }
+
+    /// Phase 2 of `load_back` with the DMA result.
+    /// `device_indices=None` (controller failed after the evict+retry)
+    /// releases the host protections and the temporary lock; otherwise
+    /// it re-attaches the values and returns the PERMANENT chain-lock
+    /// delta (release later with `dec_lock_ref(last_node)`).
+    fn finish_load_back(
+        &mut self,
+        ancestor: u32,
+        last_node: u32,
+        nodes: Vec<u32>,
+        device_indices: Option<Vec<i64>>,
+    ) -> i64 {
+        let plan = sglang_radix::LoadBackPlan {
+            ancestor,
+            last_node,
+            nodes,
+            host_indices: vec![],
+        };
+        self.tree
+            .finish_load_back(&plan, device_indices.as_deref())
+    }
+
+    /// Abandon an open load-back without a DMA result (request aborted).
+    fn abort_load_back(&mut self, ancestor: u32, nodes: Vec<u32>) {
+        let plan = sglang_radix::LoadBackPlan {
+            ancestor,
+            last_node: 0,
+            nodes,
+            host_indices: vec![],
+        };
+        self.tree.abort_load_back(&plan);
+    }
+
+    /// Successful `write_backup` tree-side effects: attach the host copy,
+    /// mark the backup pending, and take the protective device lock
+    /// (`lock=True`, write-through). Returns the lock delta.
+    fn begin_backup(&mut self, node: u32, host_indices: Vec<i64>, lock: bool) -> i64 {
+        self.tree.begin_backup(node, &host_indices, lock)
+    }
+
+    /// DMA ack processed: clear the pending flag on one publish node.
+    fn end_backup(&mut self, node: u32) {
+        self.tree.end_backup(node);
+    }
+
+    fn protect_host(&mut self, node: u32) {
+        self.tree.protect_host(node);
+    }
+
+    /// Panics (→ Python exception) when `host_ref == 0`, like Python's
+    /// `RuntimeError`.
+    fn release_host(&mut self, node: u32) {
+        self.tree.release_host(node);
+    }
+
+    /// `inc_lock_ref(node)` → delta of tokens moved evictable ->
+    /// protected (<= 0).
+    fn inc_lock_ref(&mut self, node: u32) -> i64 {
+        self.tree.inc_lock_ref(node)
+    }
+
+    /// `dec_lock_ref(node)` → tokens moved protected -> evictable (>= 0).
+    fn dec_lock_ref(&mut self, node: u32) -> i64 {
+        self.tree.dec_lock_ref(node)
+    }
+
+    /// write_back facade primitives.
+
+    /// `_detach_backuped`: demote to host-only, returning the device run
+    /// (the caller keeps it for the staged DMA).
+    fn detach_backuped(&mut self, node: u32) -> Vec<i64> {
+        self.tree.detach_backuped(node)
+    }
+
+    /// `_drop_subtree_no_host` →
+    /// `(freed_device, free_device_runs, free_host_runs)`; all zeros when
+    /// refused (a subtree node holds a host reference).
+    fn drop_subtree_no_host(
+        &mut self,
+        root: u32,
+    ) -> (i64, Vec<Vec<i64>>, Vec<Vec<i64>>) {
+        let r = self.tree.drop_subtree_no_host(root);
+        (r.freed_device, r.free_device, r.free_host)
+    }
+
+    /// `_promote_parent`: the parent becomes a device leaf once all of
+    /// its children are evicted; re-insert it into the caller's heap.
+    fn promote_parent(&mut self, node: u32) -> Option<u32> {
+        self.tree.promote_parent(node)
+    }
+
+    // ---- sizes / set membership / node accessors ----
+
+    fn evictable_size(&self) -> i64 {
+        self.tree.evictable_size()
+    }
+
+    fn protected_size(&self) -> i64 {
+        self.tree.protected_size()
+    }
+
+    fn total_size(&self) -> i64 {
+        self.tree.total_size()
+    }
+
+    fn total_host_size(&self) -> i64 {
+        self.tree.total_host_size()
+    }
+
+    fn evictable_leaves(&self) -> Vec<u32> {
+        self.tree.evictable_leaves()
+    }
+
+    fn evictable_host_leaves(&self) -> Vec<u32> {
+        self.tree.evictable_host_leaves()
+    }
+
+    fn evictable_leaves_ordered(&self) -> Vec<u32> {
+        self.tree.evictable_leaves_ordered()
+    }
+
+    fn node_children(&self, node: u32) -> Vec<u32> {
+        self.tree.node_children(node)
+    }
+
+    fn node_value(&self, node: u32) -> Option<Vec<i64>> {
+        self.tree.node_value(node)
+    }
+
+    fn node_host_value(&self, node: u32) -> Option<Vec<i64>> {
+        self.tree.node_host_value(node)
+    }
+
+    fn node_evicted(&self, node: u32) -> bool {
+        self.tree.node_evicted(node)
+    }
+
+    fn node_backuped(&self, node: u32) -> bool {
+        self.tree.node_backuped(node)
+    }
+
+    fn node_lock_ref(&self, node: u32) -> u32 {
+        self.tree.node_lock_ref(node)
+    }
+
+    fn node_host_ref(&self, node: u32) -> u32 {
+        self.tree.node_host_ref(node)
+    }
+
+    fn node_hit_count(&self, node: u32) -> u32 {
+        u32::try_from(self.tree.node_hit_count(node)).unwrap_or(u32::MAX)
+    }
+
+    fn node_priority(&self, node: u32) -> i32 {
+        self.tree.node_priority(node)
+    }
+
+    fn node_last_access(&self, node: u32) -> u32 {
+        u32::try_from(self.tree.node_last_access(node)).unwrap_or(u32::MAX)
+    }
+
+    fn node_key(&self, node: u32) -> Option<Vec<i64>> {
+        self.tree.node_key(node)
+    }
+
+    fn node_backup_pending(&self, node: u32) -> bool {
+        self.tree.node_backup_pending(node)
+    }
+}
+
 // ------------------------------------------------------------ scheduler core
 
 /// Persistent scheduler core: owns the queues, the radix tree and the NTR
@@ -1052,6 +1368,7 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RadixTree>()?;
     m.add_class::<SWARadixTree>()?;
     m.add_class::<MambaRadixTree>()?;
+    m.add_class::<HiRadixTree>()?;
     m.add_function(wrap_pyfunction!(plan_next_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_next_after_decay, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_estimate_after_retract, m)?)?;

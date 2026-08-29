@@ -1423,7 +1423,7 @@ mod tests {
         let a: Vec<i64> = (0..10).collect();
         let b: Vec<i64> = (100..110).collect();
         let la = t.insert(&RadixKey::new(&a), &vals(10, 1000), &[1], 0).last_node;
-        let lb = t.insert(&RadixKey::new(&b), &vals(10, 2000), &[2], 0).last_node;
+        let _lb = t.insert(&RadixKey::new(&b), &vals(10, 2000), &[2], 0).last_node;
         t.inc_lock_ref(la); // lock A (LRU)
 
         // Mamba evict of 10: A is locked -> skip; B is free -> evict

@@ -395,6 +395,155 @@ fn bench_mamba_lock_ref(c: &mut Criterion) {
     group.finish();
 }
 
+// ----------------------------------------------------------- HiRadix (M2/1d)
+
+/// Host-tier tree in the default write-through configuration
+/// (threshold 2, load_back_threshold 10).
+fn build_hiradix_agent_tree(
+    agents: usize,
+) -> (sglang_radix::HiRadixTree, Vec<Vec<i64>>, Vec<Vec<i64>>) {
+    let mut tree = sglang_radix::HiRadixTree::new(
+        1,
+        false,
+        sglang_radix::HiPolicy::WriteThrough,
+        EvictionPolicy::Lru,
+        2,
+        10,
+    );
+    let shared: Vec<i64> = (0..SHARED).map(|i| ((i * 7919) % 100_000) as i64).collect();
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    for a in 0..agents {
+        let mut k = shared.clone();
+        let mut v = (0..SHARED).map(|i| 100_000 + i as i64).collect::<Vec<_>>();
+        for j in 0..TAIL {
+            let tok = a as i64 * 10_000 + j as i64;
+            k.push(tok);
+            v.push(5_000_000 + tok);
+        }
+        keys.push(k.clone());
+        values.push(v);
+        let _ = tree.insert(&RadixKey::new(&k), &values[a], 0, false);
+    }
+    (tree, keys, values)
+}
+
+fn bench_hiradix_match(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hiradix_match_prefix");
+    let (tree, keys, _values) = build_hiradix_agent_tree(256);
+    let probe = keys[0].clone();
+    let probe_r = RadixKey::new(&probe);
+    group.bench_function("agent_full_hit", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.match_prefix(black_box(&probe_r)));
+        })
+    });
+    // Ends 256 tokens inside the private tail: splits a node.
+    let partial: Vec<i64> = probe[..SHARED + TAIL - 256].to_vec();
+    let partial_r = RadixKey::new(&partial);
+    group.bench_function("agent_split_hit", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.match_prefix(black_box(&partial_r)));
+        })
+    });
+    group.finish();
+}
+
+fn bench_hiradix_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hiradix_insert");
+    let (tree, keys, _values) = build_hiradix_agent_tree(256);
+    let mut fresh = keys[0].clone();
+    fresh.extend((2_000_000..2_001_024).map(|i| i as i64));
+    let fresh_r = RadixKey::new(&fresh);
+    let fresh_v: Vec<i64> = (0..fresh.len()).map(|i| 8_000_000 + i as i64).collect();
+    group.bench_function("agent_9k_high_overlap", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.insert(black_box(&fresh_r), &fresh_v, 0, false));
+        })
+    });
+    group.finish();
+}
+
+fn bench_hiradix_evict(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hiradix_evict");
+    let (tree, _keys, _values) = build_hiradix_agent_tree(256);
+    let total = SHARED * 256 + TAIL * 256;
+    for (frac, label) in [(0.01, "agent-256_1pct"), (0.1, "agent-256_10pct")] {
+        let n = (total as f64 * frac) as usize;
+        group.bench_with_input(label, &n, |b, &n| {
+            b.iter(|| {
+                let mut t = tree.clone();
+                let _ = black_box(t.evict(n));
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_hiradix_evict_host(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hiradix_evict_host");
+    // Depth-256 chain, fully backed up, then demoted: host eviction
+    // walks the chain leaf-first, deleting as it goes.
+    let mut tree = sglang_radix::HiRadixTree::new(
+        1,
+        false,
+        sglang_radix::HiPolicy::WriteThrough,
+        EvictionPolicy::Lru,
+        2,
+        10,
+    );
+    let mut prefix: Vec<i64> = Vec::new();
+    for level in 0..256usize {
+        prefix.push(level as i64 * 17 + 1);
+        let v: Vec<i64> = (0..=level).map(|i| level as i64 * 1_000_000 + i as i64).collect();
+        let r = tree.insert(&RadixKey::new(&prefix), &v, 0, false);
+        // The new leaf carries its single new token; back that up.
+        let host: Vec<i64> = vec![50_000_000 + level as i64 * 1_000_000];
+        tree.begin_backup(r.last_node, &host, false);
+    }
+    // One new token per level: 256 tokens across the chain.
+    let total = 256;
+    let _ = tree.evict(total);
+    group.bench_function("depth-256_chain", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.evict_host(total));
+        })
+    });
+    group.finish();
+}
+
+fn bench_hiradix_lock_ref(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hiradix_lock_ref_walk");
+    let mut tree = sglang_radix::HiRadixTree::new(
+        1,
+        false,
+        sglang_radix::HiPolicy::WriteThrough,
+        EvictionPolicy::Lru,
+        2,
+        10,
+    );
+    let mut prefix: Vec<i64> = Vec::new();
+    let mut leaf: u32 = 0;
+    for level in 0..256usize {
+        prefix.push(level as i64 * 17 + 1);
+        let v: Vec<i64> = (0..=level).map(|i| level as i64 * 1_000_000 + i as i64).collect();
+        let r = tree.insert(&RadixKey::new(&prefix), &v, 0, false);
+        leaf = r.last_node;
+    }
+    group.bench_function("depth-256", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = t.inc_lock_ref(black_box(leaf));
+            let _ = t.dec_lock_ref(black_box(leaf));
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_match,
@@ -409,6 +558,11 @@ criterion_group!(
     bench_mamba_match,
     bench_mamba_insert,
     bench_mamba_evict,
-    bench_mamba_lock_ref
+    bench_mamba_lock_ref,
+    bench_hiradix_match,
+    bench_hiradix_insert,
+    bench_hiradix_evict,
+    bench_hiradix_evict_host,
+    bench_hiradix_lock_ref
 );
 criterion_main!(benches);

@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA and M2/1c Mamba tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, and M2/1d HiRadix tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -272,6 +272,39 @@ differential against the unmodified Python `MambaRadixCache` driven
 through a recording fake `TokenToKVPoolAllocator` + mamba allocator,
 with `mamba_cache_chunk_size` pinned to 64). The Python-side
 `MambaRadixCacheRust` facade + default-flip wiring is M7.
+
+**M2/1d (HiRadix host tier) is code-complete on this branch:**
+`rust/sglang-radix/src/hiradix.rs` ports the `HiRadixCache` tree
+semantics: device + host values as independent `Option`s (device
+eviction DEMOTES a backed-up leaf to host-only or deletes a regular
+leaf; host eviction DELETES the node), the contiguous-prefix backup
+invariant, the write-through hit-count threshold (the tree reports
+`backup_needed` instead of firing the DMA), the two-phase
+`init_load_back` / `finish_load_back` / `abort_load_back` with the
+temporary ancestor lock + permanent last-node chain lock,
+`evict_host` with root/skip/parent-promotion rules, `insert_host`
+(host-only nodes, split slicing of `host_value`), and the
+write-back facade primitives the deprecated `_evict_write_back` loop
+is decomposed into (`detach_backuped`, `drop_subtree_no_host`,
+`promote_parent`, `evictable_leaves_ordered`). Heaps are rebuilt per
+call from the `evictable_leaves` / `evictable_host_leaves` sets with
+stale-entry filtering at pop time, exactly like Python's
+`heapq` snapshot; the shared `EvictionPolicy`/`Prio` ordering was
+factored out of `policy.rs` so all four trees use one definition.
+Exposed as the `HiRadixTree` pyclass in `sglang-scheduler` pybind
+(constructor takes `page_size, is_eagle, write_policy,
+eviction_policy, write_through_threshold, load_back_threshold`);
+verified by 15 Rust unit tests (torch-free), 5 criterion benches
+(match / insert / evict / evict_host / lock walk over the 256-agent
+shape and a depth-256 host chain), and
+`test/registered/rust/test_rust_hiradix_parity.py` (CPU CI,
+differential against the unmodified Python `HiRadixCache`
+constructed without its `__init__` — `__new__` + the attributes the
+tree ops touch + the real `reset()` — driven through a recording
+fake controller whose `write` / `load` hand out deterministic arange
+runs that the test feeds back into the Rust tree via
+`begin_backup` / `finish_load_back`). The Python-side
+`HiRadixCacheRust` facade + default-flip wiring is M7.
 
 Host-gated remainder: record the two canonical target-hardware sessions
 (below) and the Python-side M1–M11 baselines for the A/B numbers.
