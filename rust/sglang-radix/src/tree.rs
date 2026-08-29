@@ -43,8 +43,8 @@ pub enum Head {
 /// `(namespace, head)` — the full children-map key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChildKey {
-    ns: u32,
-    head: Head,
+    pub ns: u32,
+    pub head: Head,
 }
 
 /// One tree node. `key` and `value` are parallel: `value` has one KV index

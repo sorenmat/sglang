@@ -1,11 +1,12 @@
 //! Microbenchmarks M1–M4 from the migration plan: `match_prefix`,
 //! `insert`, `evict(n)`, and lock-ref walks, over realistic coding-agent
-//! shapes (one long shared prefix, many private tails).
+//! shapes (one long shared prefix, many private tails). Plus the M2/1b
+//! SWA dual-counter tree over the same shapes.
 
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use sglang_radix::{EvictionPolicy, RadixKey, RadixTree};
+use sglang_radix::{EvictionPolicy, RadixKey, RadixTree, SWARadixTree};
 
 const SHARED: usize = 8192; // shared system prompt
 const TAIL: usize = 1024; // per-agent private tokens
@@ -191,12 +192,113 @@ fn bench_clone_tree(c: &mut Criterion) {
     group.finish();
 }
 
+// ------------------------------------------------------------- SWA (M2/1b)
+
+const SWA_WINDOW: usize = 4096; // typical SWA sliding-window size
+
+/// SWA coding-agent shape: `agents` requests sharing `SHARED` tokens, each
+/// with a `TAIL`-token private tail; window < shared prefix so matches
+/// span the window boundary.
+fn build_swa_agent_tree(agents: usize) -> (SWARadixTree, Vec<Vec<i64>>, Vec<Vec<i64>>) {
+    let mut tree = SWARadixTree::new(1, false, SWA_WINDOW);
+    let shared: Vec<i64> = (0..SHARED).map(|i| ((i * 7919) % 100_000) as i64).collect();
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    for a in 0..agents {
+        let mut k = shared.clone();
+        let mut v = (0..SHARED).map(|i| 100_000 + i as i64).collect::<Vec<_>>();
+        for j in 0..TAIL {
+            let tok = a as i64 * 10_000 + j as i64;
+            k.push(tok);
+            v.push(5_000_000 + tok);
+        }
+        keys.push(k.clone());
+        values.push(v);
+        tree.insert(&RadixKey::new(&k), &values[a], 0, 0);
+    }
+    (tree, keys, values)
+}
+
+fn bench_swa_match(c: &mut Criterion) {
+    let mut group = c.benchmark_group("swa_match_prefix");
+    let (tree, keys, _values) = build_swa_agent_tree(256);
+    let probe = keys[0].clone();
+    let probe_r = RadixKey::new(&probe);
+    group.bench_function("agent_full_hit", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.match_prefix(black_box(&probe_r)));
+        })
+    });
+    group.finish();
+}
+
+fn bench_swa_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("swa_insert");
+    let (tree, keys, _values) = build_swa_agent_tree(256);
+    let mut fresh = keys[0].clone();
+    fresh.extend((2_000_000..2_001_024).map(|i| i as i64));
+    let fresh_r = RadixKey::new(&fresh);
+    let fresh_v: Vec<i64> = (0..fresh.len()).map(|i| 8_000_000 + i as i64).collect();
+    group.bench_function("agent_9k_high_overlap", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.insert(black_box(&fresh_r), &fresh_v, 0, 0));
+        })
+    });
+    group.finish();
+}
+
+fn bench_swa_evict(c: &mut Criterion) {
+    let mut group = c.benchmark_group("swa_evict");
+    let (tree, _keys, _values) = build_swa_agent_tree(256);
+    let total = SHARED * 256 + TAIL * 256;
+    for (frac, label) in [(0.01, "1pct"), (0.1, "10pct")] {
+        let n = (total as f64 * frac) as usize;
+        group.bench_with_input(format!("agent-256_swa-{label}"), &n, |b, &n| {
+            b.iter(|| {
+                let mut t = tree.clone();
+                let _ = black_box(t.evict(0, n));
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_swa_lock_ref(c: &mut Criterion) {
+    let mut group = c.benchmark_group("swa_lock_ref_walk");
+    // Deep chain: one node per level; window smaller than the chain so
+    // the uuid boundary lands mid-walk.
+    let mut tree = SWARadixTree::new(1, false, 32);
+    let mut prefix: Vec<i64> = Vec::new();
+    let mut leaf: u32 = 0;
+    for level in 0..256usize {
+        prefix.push(level as i64 * 17 + 1);
+        let v: Vec<i64> = (0..=level).map(|i| level as i64 * 1_000_000 + i as i64).collect();
+        let key = RadixKey::new(&prefix);
+        let r = tree.insert(&key, &v, 0, 0);
+        leaf = r.last_node;
+    }
+    group.bench_function("depth-256-window-32", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let (uuid, _) = t.inc_lock_ref(black_box(leaf));
+            t.dec_lock_ref(black_box(leaf), uuid, false);
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_match,
     bench_insert,
     bench_evict,
     bench_lock_ref,
-    bench_clone_tree
+    bench_clone_tree,
+    bench_swa_match,
+    bench_swa_insert,
+    bench_swa_evict,
+    bench_swa_lock_ref
 );
 criterion_main!(benches);

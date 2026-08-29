@@ -581,6 +581,159 @@ impl RadixTree {
     }
 }
 
+/// Raw `sglang-radix` SWA (dual-counter) tree ops — Python `SWARadixCacheRust`
+/// facade backing (plan.md M2/1b). The allocator is *not* behind this
+/// boundary: every `free` / `free_full` / `free_swa` the Python tree would
+/// make comes back as a value-run list instead.
+#[pyclass]
+struct SWARadixTree {
+    tree: sglang_radix::SWARadixTree,
+}
+
+#[pymethods]
+impl SWARadixTree {
+    #[new]
+    fn new(page_size: u32, is_eagle: bool, sliding_window_size: u32) -> Self {
+        Self {
+            tree: sglang_radix::SWARadixTree::new(
+                page_size as usize,
+                is_eagle,
+                sliding_window_size as usize,
+            ),
+        }
+    }
+
+    /// `match_prefix(keys)` → `(indices, last_node)`.
+    fn match_prefix(&mut self, py: Python<'_>, keys: Vec<i64>) -> PyResult<(Vec<i64>, u32)> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.match_prefix(&key)
+        });
+        Ok((r.indices, r.last_node))
+    }
+
+    /// `insert(keys, values, update_kv_after_len, swa_evicted_seqlen)` →
+    /// `(prefix_len, last_node, free_kv, free_full, free_swa, recover)`
+    /// where `recover` is a list of `[tree_value, incoming]` runs the
+    /// caller re-points (`set_full_to_swa_mapping` + `free_full`).
+    fn insert(
+        &mut self,
+        py: Python<'_>,
+        keys: Vec<i64>,
+        values: Vec<i64>,
+        update_kv_after_len: u32,
+        swa_evicted_seqlen: u32,
+    ) -> PyResult<
+        (
+            u32,
+            u32,
+            Vec<Vec<i64>>,
+            Vec<Vec<i64>>,
+            Vec<Vec<i64>>,
+            Vec<(Vec<i64>, Vec<i64>)>,
+        ),
+    > {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.insert(
+                &key,
+                &values,
+                update_kv_after_len as usize,
+                swa_evicted_seqlen as usize,
+            )
+        });
+        let recover = r
+            .recover_locked_full
+            .into_iter()
+            .map(|e| (e.tree_value, e.incoming))
+            .collect();
+        Ok((
+            u32::try_from(r.prefix_len).unwrap_or(u32::MAX),
+            r.last_node,
+            r.free.kv,
+            r.free.full,
+            r.free.swa,
+            recover,
+        ))
+    }
+
+    /// `evict(full_tokens, swa_tokens)` →
+    /// `(full_evicted, swa_evicted, free_kv, free_full, free_swa)`.
+    fn evict(
+        &mut self,
+        py: Python<'_>,
+        full_tokens: u32,
+        swa_tokens: u32,
+    ) -> PyResult<(u32, u32, Vec<Vec<i64>>, Vec<Vec<i64>>, Vec<Vec<i64>>)> {
+        let r =
+            py.detach(|| self.tree.evict(full_tokens as usize, swa_tokens as usize));
+        Ok((
+            u32::try_from(r.full_num_evicted).unwrap_or(u32::MAX),
+            u32::try_from(r.swa_num_evicted).unwrap_or(u32::MAX),
+            r.free.kv,
+            r.free.full,
+            r.free.swa,
+        ))
+    }
+
+    /// `inc_lock_ref(node)` → `(swa_uuid_for_lock | None, full-side delta)`.
+    fn inc_lock_ref(&mut self, node: u32) -> (Option<u64>, i64) {
+        self.tree.inc_lock_ref(node)
+    }
+
+    /// `dec_lock_ref(node, swa_uuid_or_none, skip_swa)` → full-side delta.
+    fn dec_lock_ref(
+        &mut self,
+        node: u32,
+        swa_uuid: Option<u64>,
+        skip_swa: bool,
+    ) -> i64 {
+        self.tree.dec_lock_ref(node, swa_uuid, skip_swa)
+    }
+
+    /// `dec_swa_lock_only(node, swa_uuid_or_none)` → `free_swa` runs.
+    fn dec_swa_lock_only(&mut self, node: u32, swa_uuid: Option<u64>) -> Vec<Vec<i64>> {
+        self.tree.dec_swa_lock_only(node, swa_uuid).free_swa
+    }
+
+    fn full_evictable_size(&self) -> i64 {
+        self.tree.full_evictable_size()
+    }
+
+    fn swa_evictable_size(&self) -> i64 {
+        self.tree.swa_evictable_size()
+    }
+
+    fn full_protected_size(&self) -> i64 {
+        self.tree.full_protected_size()
+    }
+
+    fn swa_protected_size(&self) -> i64 {
+        self.tree.swa_protected_size()
+    }
+
+    /// `total_size()` → `(full, swa)`.
+    fn total_size(&self) -> (i64, i64) {
+        self.tree.total_size()
+    }
+
+    fn node_children(&self, node: u32) -> Vec<u32> {
+        self.tree.node_children(node)
+    }
+
+    fn node_tombstone(&self, node: u32) -> bool {
+        self.tree.node_tombstone(node)
+    }
+
+    fn node_full_lock_ref(&self, node: u32) -> u32 {
+        self.tree.node_full_lock_ref(node)
+    }
+
+    fn node_swa_lock_ref(&self, node: u32) -> u32 {
+        self.tree.node_swa_lock_ref(node)
+    }
+}
+
 // ------------------------------------------------------------ scheduler core
 
 /// Persistent scheduler core: owns the queues, the radix tree and the NTR
@@ -733,6 +886,7 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MODE_DECODE", 2i32)?;
     m.add_class::<SchedulerCore>()?;
     m.add_class::<RadixTree>()?;
+    m.add_class::<SWARadixTree>()?;
     m.add_function(wrap_pyfunction!(plan_next_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_next_after_decay, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_estimate_after_retract, m)?)?;

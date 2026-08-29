@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA tree port on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -232,6 +232,21 @@ fingerprint-only captures). The replay side is implemented in
   (CUDA CI: capture → engine+core reset → live replay → hard-diff assertion;
   needs the built `.so` via `cargo build -p sglang-scheduler --features
   python`).
+
+**M2/1b (SWA dual-counter tree) is code-complete on this branch:**
+`rust/sglang-radix/src/swa.rs` ports the `SWARadixCache` tree semantics
+(dual full/SWA lock refs, `swa_tombstone` + uuid-based SWA-lock boundary,
+intrusive dual LRU lists, window-validated match with the Python
+list-slice-of-runs truncation quirk, dual-budget evict with cascade
+tombstone-leaf deletion, and the insert tombstone-recovery branches
+including locked-full recover). The allocator does not cross the boundary:
+`free` / `free_full` / `free_swa` come back as value-run lists on each
+result (`FreeOps` + `SWARecover`). Exposed as the `SWARadixTree` pyclass in
+`sglang-scheduler` pybind; verified by 16 Rust unit tests (torch-free) and
+`test/registered/rust/test_rust_swa_radix_parity.py` (CPU CI, differential
+against the unmodified Python `SWARadixCache` driven through a recording
+fake `SWATokenToKVPoolAllocator`). The Python-side `SWARadixCacheRust`
+facade + default-flip wiring is M7.
 
 Host-gated remainder: record the two canonical target-hardware sessions
 (below) and the Python-side M1–M11 baselines for the A/B numbers.

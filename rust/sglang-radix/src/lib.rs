@@ -12,8 +12,13 @@
 
 mod key;
 mod policy;
+mod swa;
 mod tree;
 
 pub use key::{common_prefix_len, RadixKey};
 pub use policy::{EvictionPolicy, Prio};
+pub use swa::{
+    FreeOps, LRUList, Lru, SWADecResult, SWAEvictResult, SWAInsertResult, SWAMatchResult,
+    SWANode, SWARecover, SWARadixTree,
+};
 pub use tree::{ChildKey, EvictResult, Head, InsertResult, MatchResult, NodeId, RawNode, RadixTree, ROOT};
