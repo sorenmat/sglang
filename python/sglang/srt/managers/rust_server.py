@@ -22,6 +22,7 @@ import msgspec
 
 from sglang.srt.arg_groups.overrides import resolving_view
 from sglang.srt.environ import envs
+from sglang.srt.managers import rust_scheduler
 from sglang.srt.managers.io_struct import TokenizedGenerateReqInput
 from sglang.srt.managers.utils import (
     MsgpackDecodeError,
@@ -615,6 +616,39 @@ class RustServer:
         finish_reasons = payload.finished_reasons
         tok_lens = list(map(len, output_ids))
         flat_ids = array("i", chain.from_iterable(output_ids))
+
+        # `stream` stage: the Rust frame builder takes over from the collected
+        # columns — msgpack header, the seven family flattens (the 0.37 ms ->
+        # 7.90 ms GIL-held regression when one client enables logprobs), and
+        # the ring push. Python's cost stays the per-request collection above;
+        # an empty `[]` family and `None` are the same "nobody asked" spelling
+        # on both sides of the boundary.
+        if rust_scheduler.stage_at_least("stream"):
+            if not self.server.push_generation_frame(
+                rids,
+                finish_reasons,
+                prompt_tokens,
+                tok_lens,
+                flat_ids.tobytes(),
+                out_lp_val=payload.output_token_logprobs_val or None,
+                out_lp_idx=payload.output_token_logprobs_idx or None,
+                in_lp_val=payload.input_token_logprobs_val or None,
+                in_lp_idx=payload.input_token_logprobs_idx or None,
+                out_top_val=payload.output_top_logprobs_val or None,
+                out_top_idx=payload.output_top_logprobs_idx or None,
+                in_top_val=payload.input_top_logprobs_val or None,
+                in_top_idx=payload.input_top_logprobs_idx or None,
+                out_tid_val=payload.output_token_ids_logprobs_val or None,
+                out_tid_idx=payload.output_token_ids_logprobs_idx or None,
+                in_tid_val=payload.input_token_ids_logprobs_val or None,
+                in_tid_idx=payload.input_token_ids_logprobs_idx or None,
+                hidden_rows=payload.output_hidden_states or None,
+            ):
+                logger.warning(
+                    "Rust egress closed; dropped batch of %d requests during shutdown",
+                    len(rids),
+                )
+            return
 
         # Column order here MUST match BatchHeader (header_cols) and
         # for_each_chunk's read order (data_cols); the extras contribution

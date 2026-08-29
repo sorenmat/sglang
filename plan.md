@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, M2/1d HiRadix, and M2/1e unified multi-pool tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA, M2/1c Mamba, M2/1d HiRadix, M2/1e unified multi-pool tree ports + M5 stream payload build on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -578,6 +578,37 @@ when that flatten ran unconditionally). Move:
 **Gates:** M9 Rust ≤ ½ Python p50 at B=256; trace parity on stream payloads
 (byte-identical egress frames on the canonical sessions); ITL p99 improved at
 c16 (this is where the tail-latency win is expected to show up first).
+
+**M5 (stream payload build + string-stop decisions) is code-complete on this
+branch:** `rust/sglang-server/src/stream.rs` builds the whole egress frame in
+Rust — the msgpack `BatchHeader` (4 core columns, +12 shape columns when any
+of the 7 logprob/hidden families is active), the ragged/hidden flattens, the
+f32/i32 LE data buffers, and the `[BATCH][len][header][data…]` framing,
+byte-compatible with the `for_each_chunk` decoder; `stream_py.rs` exposes
+`build_generation_frame` + `Server.push_generation_frame` (the GIL-heavy
+flatten the Python `push_generation` used to do) and moves the string-stop
+decisions next to the detokenizer (`tokenizer_manager/stop_check.rs`:
+`stop_match_tail_len`, `stop_prefix_match`, `locate_str_stop_len`,
+`check_str_stop` — the stop-string / stop-regex tail + trim-length logic of
+`Req._check_str_based_finish` / `_locate_str_stop_finished_len`).
+`rust_server.push_generation` takes the Rust path under the existing staged
+flag `SGLANG_RUST_SCHEDULER=…|stream` (implied by `SGLANG_RUST_SERVER`),
+shipping the collected columns (`rids`, finish reasons, `prompt_tokens`,
+`tok_lens`, flat ids, the 7 optional families) to `push_generation_frame`.
+Verified by 264 `sglang-server` unit tests (frame round-trips through the
+real `for_each_chunk` decoder — core-4, all-families + hidden rows,
+inactive-family empty-column spelling, NaN sentinel, finish-reason maps;
+stop-check decisions over the hand-checkable char tokenizer), the M9
+criterion benches (`stream_bench`: B=1/16/64/256 × logprobs off/on —
+~15 µs / ~645 µs at B=256 in release), and
+`test/registered/rust/test_rust_stream_parity.py` (CPU CI, differential:
+byte-identical frame header + data vs the unmodified Python packing,
+string-stop decisions vs the unmodified `Req` methods, and the M9 gate
+Rust p50 ≤ ½ Python p50 at B=256), with a dedicated `sglang-server-unit`
+job in `pr-test-rust-exts.yml`. The per-request collection (rids / lens /
+finish reasons off the `Req`s) still runs in Python — the core owning that
+state is the Phase-4 remainder; the canonical-session trace parity + ITL p99
+gates are host-gated.
 
 ## 9. Phase 5 — Speculative-decoding bookkeeping (MTP/DFlash)
 

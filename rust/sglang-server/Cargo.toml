@@ -59,11 +59,19 @@ numpy = "0.29.0"
 regex-syntax = "=0.8.11"
 rmp-serde = "1"
 rmpv = { version = "1", features = ["with-serde"] }
+# Stop-regex matching in `tokenizer_manager::stop_check` (the patterns reach
+# here only through `utils::regex::validate`'s portable-subset admission).
+regex = "1"
 # The pure-Rust core of the MM pipeline. `default-features = false` drops the
 # pyo3 bindings so it links as a plain rlib; renamed so `use sglang_mm::…` reads
 # naturally while the crate keeps its own artifact name in the shared target/.
 sglang_mm = { package = "sglang-mm", path = "../sglang-mm", default-features = false }
 
 [dev-dependencies]
+criterion = "0.5"
 # `Router::oneshot` for handler-level router tests.
 tower = { version = "0.5", features = ["util"] }
+
+[[bench]]
+name = "stream_bench"
+harness = false

@@ -14,8 +14,15 @@
 mod api_server;
 mod message;
 mod multi_modality;
+mod stream;
+mod stream_py;
 mod tokenizer_manager;
 mod utils;
+
+// Public surface for the M9 stream-frame benchmarks; the pyo3 module below
+// remains the crate's Python-facing API.
+pub use message::response::frame_decode_batch_cols;
+pub use stream::{HiddenRow, StreamColumns, build_stream_frame};
 
 use std::net::SocketAddr;
 
@@ -185,6 +192,78 @@ impl Server {
         )
     }
 
+    /// Push a whole decode batch as ONE frame, building the frame in Rust from
+    /// the scheduler's per-request columns (see `stream_py::build_generation_frame`
+    /// for the surface). Blocks for backpressure; `False` only on shutdown.
+    #[pyo3(
+        signature = (
+            rids,
+            finished_reasons,
+            prompt_tokens,
+            tok_lens,
+            ids,
+            out_lp_val = None,
+            out_lp_idx = None,
+            in_lp_val = None,
+            in_lp_idx = None,
+            out_top_val = None,
+            out_top_idx = None,
+            in_top_val = None,
+            in_top_idx = None,
+            out_tid_val = None,
+            out_tid_idx = None,
+            in_tid_val = None,
+            in_tid_idx = None,
+            hidden_rows = None,
+        )
+    )]
+    // Same wide column surface as `stream_py::build_generation_frame`.
+    #[allow(clippy::too_many_arguments)]
+    fn push_generation_frame(
+        &self,
+        py: Python<'_>,
+        rids: &Bound<'_, PyAny>,
+        finished_reasons: &Bound<'_, PyAny>,
+        prompt_tokens: &Bound<'_, PyAny>,
+        tok_lens: &Bound<'_, PyAny>,
+        ids: PyBackedBytes,
+        out_lp_val: Option<&Bound<'_, PyAny>>,
+        out_lp_idx: Option<&Bound<'_, PyAny>>,
+        in_lp_val: Option<&Bound<'_, PyAny>>,
+        in_lp_idx: Option<&Bound<'_, PyAny>>,
+        out_top_val: Option<&Bound<'_, PyAny>>,
+        out_top_idx: Option<&Bound<'_, PyAny>>,
+        in_top_val: Option<&Bound<'_, PyAny>>,
+        in_top_idx: Option<&Bound<'_, PyAny>>,
+        out_tid_val: Option<&Bound<'_, PyAny>>,
+        out_tid_idx: Option<&Bound<'_, PyAny>>,
+        in_tid_val: Option<&Bound<'_, PyAny>>,
+        in_tid_idx: Option<&Bound<'_, PyAny>>,
+        hidden_rows: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        let c = stream_py::columns_from(
+            rids,
+            finished_reasons,
+            prompt_tokens,
+            tok_lens,
+            ids,
+            out_lp_val,
+            out_lp_idx,
+            in_lp_val,
+            in_lp_idx,
+            out_top_val,
+            out_top_idx,
+            in_top_val,
+            in_top_idx,
+            out_tid_val,
+            out_tid_idx,
+            in_tid_val,
+            in_tid_idx,
+            hidden_rows,
+        )?;
+        Ok(self.push_frame(py, stream::stream_frame_bytes(&c)))
+    }
+
     /// Push a control-request result. Blocks for backpressure; `False` only on
     /// shutdown.
     fn push_control_result(&self, py: Python<'_>, rid: &str, payload: &[u8]) -> bool {
@@ -274,6 +353,11 @@ impl Server {
 #[pymodule]
 fn _server(m: &Bound<'_, PyModule>) -> PyResult<()> {
     logging::init_tracing();
+    m.add_wrapped(pyo3::wrap_pyfunction!(stream_py::build_generation_frame))?;
+    m.add_wrapped(pyo3::wrap_pyfunction!(stream_py::py_stop_match_tail_len))?;
+    m.add_wrapped(pyo3::wrap_pyfunction!(stream_py::stop_prefix_match))?;
+    m.add_wrapped(pyo3::wrap_pyfunction!(stream_py::locate_str_stop_len))?;
+    m.add_wrapped(pyo3::wrap_pyfunction!(stream_py::check_str_stop))?;
     m.add_class::<DisaggregationMode>()?;
     m.add_class::<DefaultSamplingParams>()?;
     m.add_class::<ModelConfig>()?;
