@@ -410,7 +410,7 @@ class DFlashWorkerV2(BaseSpecWorker):
         self._use_triton_compact_rebuild = supports_gpu_triton
         self._accept_bonus_buffer_cap: int = 0
         self._accept_bonus_buffer_slot: int = 0
-        self._accept_len_buf: Optional[torch.Tensor] = None
+        self._accept_len_bufs: list[torch.Tensor] = []
         self._commit_lens_bufs: List[torch.Tensor] = []
         self._bonus_id_bufs: List[torch.Tensor] = []
         self._out_tokens_bufs: List[torch.Tensor] = []
@@ -1583,7 +1583,13 @@ class DFlashWorkerV2(BaseSpecWorker):
         )
         device = self.device
         block_size = int(self.block_size)
-        self._accept_len_buf = torch.empty((new_cap,), dtype=torch.int32, device=device)
+        # All five buffers rotate on the same slot: under overlap scheduling,
+        # step N+1's accept kernel can launch before step N's consumer (metrics,
+        # FutureMap publish) reads the results, so every output of the accept
+        # computation must be double-buffered -- accept_len included.
+        self._accept_len_bufs = [
+            torch.empty((new_cap,), dtype=torch.int32, device=device) for _ in range(2)
+        ]
         self._commit_lens_bufs = [
             torch.empty((new_cap,), dtype=torch.int32, device=device) for _ in range(2)
         ]
@@ -1608,11 +1614,11 @@ class DFlashWorkerV2(BaseSpecWorker):
         torch.Tensor,
     ]:
         self._ensure_accept_bonus_buffers(bs)
-        assert self._accept_len_buf is not None
+        assert self._accept_len_bufs
         slot = self._accept_bonus_buffer_slot
         self._accept_bonus_buffer_slot = (slot + 1) % 2
         return (
-            self._accept_len_buf[:bs],
+            self._accept_len_bufs[slot][:bs],
             self._commit_lens_bufs[slot][:bs],
             self._bonus_id_bufs[slot][:bs],
             self._out_tokens_bufs[slot][:bs],
