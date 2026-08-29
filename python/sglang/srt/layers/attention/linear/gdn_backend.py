@@ -74,29 +74,36 @@ elif is_cpu():
 
 
 def flashinfer_gdn_prefill_default(model_runner: ModelRunner) -> Optional[str]:
-    """FlashInfer for the narrow SM90/SM100 GDN prefill domains we validated, else None."""
+    """FlashInfer for the narrow SM90/SM100/SM120 GDN prefill domains we
+    validated, else None."""
     sm_major = torch.cuda.get_device_capability()[0] if is_cuda() else 0
     if (
         get_exec().mamba.linear_attn_prefill_backend is not None
         or get_exec().mamba.linear_attn_backend != "triton"
         or get_exec().deterministic.enable_deterministic_inference
         or get_memory().enable_page_major_kv_layout
-        or sm_major not in (9, 10)
+        or sm_major not in (9, 10, 12)
     ):
         return None
 
     # SM100 runs the CUDA>=13 CuTe-DSL chunk kernel on a bf16 state pool;
     # SM90 runs the fused Hopper kernel on an fp32 state pool and tolerates
-    # larger chunks. Everything outside these validated domains keeps Triton.
+    # larger chunks. SM120 (RTX PRO 6000 Blackwell) runs its own CuTe-DSL
+    # chunk kernel (flashinfer chunk_gated_delta_rule_sm120); like SM100 it
+    # needs CUDA>=13, and the kernel only accepts fp32 initial states, which
+    # the wrapper converts either pool dtype to. Everything outside these
+    # validated domains keeps Triton.
     cuda_version = torch.version.cuda
-    if sm_major == 10:
+    if sm_major in (10, 12):
         if cuda_version is None or int(cuda_version.split(".", 1)[0]) < 13:
             return None
         max_chunk = 8192
-        expected_state_dtype = torch.bfloat16
+        allowed_state_dtypes = (
+            (torch.bfloat16,) if sm_major == 10 else (torch.bfloat16, torch.float32)
+        )
     else:
         max_chunk = 32768
-        expected_state_dtype = torch.float32
+        allowed_state_dtypes = (torch.float32,)
 
     chunk_size = get_schedule().chunked_prefill_size
     config = hybrid_gdn_config(model_runner.model_config)
@@ -107,7 +114,7 @@ def flashinfer_gdn_prefill_default(model_runner: ModelRunner) -> Optional[str]:
         or getattr(config, "linear_key_head_dim", None) != 128
         or getattr(config, "linear_value_head_dim", None) != 128
         or model_runner.req_to_token_pool.mamba_pool.mamba_cache.temporal.dtype
-        != expected_state_dtype
+        not in allowed_state_dtypes
     ):
         return None
 

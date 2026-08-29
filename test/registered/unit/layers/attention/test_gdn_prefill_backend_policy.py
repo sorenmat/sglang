@@ -108,6 +108,23 @@ class TestFlashInferGDNPrefillBackendPolicy(CustomTestCase):
     def test_selects_flashinfer_for_supported_sm100_gdn(self):
         self.assertEqual(self.apply_policy(make_runner(self)), "flashinfer")
 
+    def test_selects_flashinfer_for_sm120_gdn(self):
+        """SM120 (RTX PRO 6000 Blackwell) runs flashinfer's own chunked-prefill
+        DSL kernel with either state dtype (the wrapper converts to the fp32
+        initial states the kernel requires)."""
+        for state_dtype in (torch.bfloat16, torch.float32):
+            with self.subTest(state_dtype=state_dtype):
+                runner = make_runner(self, state_dtype=state_dtype)
+                self.assertEqual(
+                    self.apply_policy(runner, capability=(12, 0)), "flashinfer"
+                )
+
+    def test_declines_sm120_on_cuda_12(self):
+        runner = make_runner(self)
+        self.assertIsNone(
+            self.apply_policy(runner, capability=(12, 0), cuda_version="12.9")
+        )
+
     def test_selects_flashinfer_for_radix_cache_strategies(self):
         for strategy in ("no_buffer", "extra_buffer", "extra_buffer_lazy"):
             with self.subTest(strategy=strategy):
@@ -166,7 +183,9 @@ class TestFlashInferGDNPrefillBackendPolicy(CustomTestCase):
         cases = (
             ("non_cuda", {}, {"cuda": False}),
             ("hopper", {}, {"capability": (9, 0)}),
-            ("future_sm", {}, {"capability": (12, 0)}),
+            # SM120 is a supported domain now (see test_selects_flashinfer_
+            # for_sm120_gdn); only genuinely unknown archs stay rejected.
+            ("future_sm", {}, {"capability": (20, 0)}),
             ("cuda_12", {}, {"cuda_version": "12.9"}),
             ("fp32_state", {"state_dtype": torch.float32}, {}),
             ("key_dim", {"key_dim": 64}, {}),

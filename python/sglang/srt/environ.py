@@ -1249,6 +1249,11 @@ class Envs:
     # raising max_running_requests. Off = original locking + ratio (escape hatch).
     SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK = EnvBool(False)
 
+    # Opt-in: use the FlashInfer GDN target-verify (MTP) kernel on SM120
+    # (RTX PRO 6000 Blackwell). The kernel is SM90+ CuTe-DSL and not yet
+    # validated on SM120, so Triton remains the default there.
+    SGLANG_GDN_FLASHINFER_VERIFY_SM120 = EnvBool(False)
+
     # ===================================================================
     # CUDA graphs and execution buffers
     # ===================================================================

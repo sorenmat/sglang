@@ -19,6 +19,7 @@ import torch
 from sglang.srt.layers.attention.linear.kernels.kernel_backend import (
     LinearAttnKernelBase,
 )
+from sglang.srt.environ import envs
 from sglang.srt.runtime_context import (
     mamba_cache_chunk_size,
 )
@@ -151,6 +152,16 @@ def is_flashinfer_gdn_prefill_available() -> bool:
     return bool(available and prefill_fn is not None)
 
 
+def flashinfer_gdn_verify_supported(sm_major: int) -> bool:
+    """Whether the FlashInfer GDN target-verify (MTP) kernel may be used on
+    this architecture: validated on SM90/SM100; SM120 (consumer/Workstation
+    Blackwell, e.g. RTX PRO 6000) is opt-in via
+    SGLANG_GDN_FLASHINFER_VERIFY_SM120 until validated."""
+    return sm_major in (9, 10) or (
+        sm_major >= 12 and envs.SGLANG_GDN_FLASHINFER_VERIFY_SM120.get()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Kernel implementation
 # ---------------------------------------------------------------------------
@@ -189,7 +200,7 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
         # The SM120 chunked-prefill kernel only accepts float32 initial
         # states; SM100 accepts the state-pool dtype directly.
         self._prefill_needs_fp32_state = sm_major >= 12
-        self.supports_target_verify = sm_major in (9, 10)
+        self.supports_target_verify = flashinfer_gdn_verify_supported(sm_major)
         self._aligned_input_buffers: dict[tuple, torch.Tensor] = {}
         self._aligned_parameter_cache: dict[
             tuple, tuple[torch.Tensor, torch.Tensor]
