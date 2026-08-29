@@ -1,0 +1,21 @@
+[package]
+name = "sglang-radix"
+description = "Rust radix (prefix) tree core for the SGLang KV cache — port of the base RadixCache semantics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# rlib: linked by sglang-scheduler (planner + PyO3 facade). No cdylib: this
+# crate has no Python surface of its own.
+name = "sglang_radix"
+crate-type = ["rlib"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "radix_bench"
+harness = false

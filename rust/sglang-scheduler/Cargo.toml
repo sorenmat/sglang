@@ -1,0 +1,45 @@
+[package]
+name = "sglang-scheduler"
+description = "Rust planner + persistent scheduler core for SGLang's CPU control plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Consumed by python/setup.py: registers this crate as a PyO3 extension module
+# of the main sglang wheel at the given import path.
+[package.metadata.sglang]
+python-module = "sglang.srt.rust_extensions._scheduler"
+debug = false
+features = ["python"]
+
+[lib]
+# Unique per-crate artifact name (the shared workspace target/ dir cannot hold
+# two cdylibs with the same lib name). The importable Python module is
+# `_scheduler`: the name comes from the `#[pymodule]` entry point and the
+# setuptools-rust target, which renames the built artifact.
+name = "sglang_scheduler"
+# cdylib: the PyO3 module (`sglang.srt.rust_extensions._scheduler`).
+# rlib:   pure-Rust core, used by the test/bench binaries and (later) by
+#         sglang-server's native path.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Both features are deliberately NOT default (same rationale as sglang-mm):
+# cargo unifies a package's features across everything selected in one
+# invocation, so a default-on pyo3 would leak into `cargo test`/`cargo bench`
+# builds. The wheel asks for it via `[package.metadata.sglang] features`.
+default = []
+# Every PyO3 binding (facade classes + `#[pymodule] _scheduler`).
+python = ["dep:pyo3", "dep:numpy"]
+
+[dependencies]
+sglang-radix = { path = "../sglang-radix" }
+pyo3 = { workspace = true, optional = true }
+numpy = { version = "0.29", optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "planner_bench"
+harness = false
