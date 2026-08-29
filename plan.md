@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete on branch `rust-scheduler`) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -209,6 +209,32 @@ filter ≈ 3.9 µs, finish-state processing ≈ 6.7 µs. Rust gates are set agai
 *these* numbers, plus p99.
 
 ### 4.2 Trace capture + replay
+
+**Status (branch `rust-scheduler`):** capture is live at stage `core`
+(`SGLANG_TRACE_SCHEDULER` JSONL: `cfg` header + ingress / plan / apply_result /
+drop lines; raw token ids by default, `SGLANG_TRACE_SCHEDULER_TOKENS=hash` for
+fingerprint-only captures). The replay side is implemented in
+`python/sglang/test/scripted_runtime/replay.py`:
+
+- `replay_core` — torch-free offline replayer: rebuilds a fresh
+  `SchedulerCore` from the `cfg` header and re-drives the recorded op
+  sequence, diffing every recomputed plan against the capture field-for-field
+  (hard = decision disagreement, soft = tolerated drift; a hard divergence
+  raises `ReplayError` instead of panicking inside the engine).
+- `live_replay_script` — the target-host feeder: a `ScriptedContext` generator
+  that submits the recorded ingresses into a live scheduler and mocks
+  `run_batch` with the recorded sampled tokens, so the attached drivers write
+  a second trace that `diff_sessions` can compare line-for-line (one script
+  yield == one iteration == one recorded plan line).
+- Tests: `test/registered/rust/test_rust_trace_replay.py` (CPU CI: lossless
+  round-trip of a synthetic session, diff detection, schema validation) and
+  `test/registered/scripted_runtime/test_rust_scheduler_live_replay.py`
+  (CUDA CI: capture → engine+core reset → live replay → hard-diff assertion;
+  needs the built `.so` via `cargo build -p sglang-scheduler --features
+  python`).
+
+Host-gated remainder: record the two canonical target-hardware sessions
+(below) and the Python-side M1–M11 baselines for the A/B numbers.
 
 - **Capture.** New env `SGLANG_TRACE_SCHEDULER=<path>`: per iteration, dump
   one JSONL line — ingress reqs (rids, token-id hashes + lens, sampling params),

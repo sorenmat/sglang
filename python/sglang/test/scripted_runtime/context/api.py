@@ -54,19 +54,21 @@ class ScriptedContext:
     def start_req(
         self,
         *,
-        prompt_len: int,
+        prompt_len: int = 0,
         max_new_tokens: int = 8,
         rid: Optional[str] = None,
         ignore_eos: bool = False,
         priority: Optional[int] = None,
         dp_rank: Optional[int] = None,
         prompt_token: int = 1,
+        prompt_ids: Optional[List[int]] = None,
         return_logprob: bool = False,
         logprob_start_len: Optional[int] = None,
         top_logprobs_num: Optional[int] = None,
         stop_token_ids: Optional[List[int]] = None,
         temperature: Optional[float] = None,
         lora_path: Optional[str] = None,
+        timeout_s: Optional[float] = None,
     ) -> ScriptedReqHandle:
         return self._req_starter.start_req(
             prompt_len=prompt_len,
@@ -76,12 +78,14 @@ class ScriptedContext:
             priority=priority,
             dp_rank=dp_rank,
             prompt_token=prompt_token,
+            prompt_ids=prompt_ids,
             return_logprob=return_logprob,
             logprob_start_len=logprob_start_len,
             top_logprobs_num=top_logprobs_num,
             stop_token_ids=stop_token_ids,
             temperature=temperature,
             lora_path=lora_path,
+            timeout_s=timeout_s,
         )
 
     def pause_generation(self, *, mode: Literal["retract", "in_place"]) -> None:

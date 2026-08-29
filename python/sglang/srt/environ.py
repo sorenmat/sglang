@@ -1612,6 +1612,12 @@ class Envs:
     # rows are traced, which is all the core's planning needs and avoids a
     # CPU copy of every KV row on each decode step.
     SGLANG_RUST_CORE_VALUES = EnvStr("0")
+    # SGLANG_TRACE_SCHEDULER only: how ingress token ids are stored.
+    # "raw" (default) keeps the ids verbatim (replay-faithful); "hash"
+    # stores a sha256 fingerprint + length instead — smaller and
+    # content-free captures, but not replayable through the live
+    # scheduler (the Rust replayer only needs lengths + plan shape).
+    SGLANG_TRACE_SCHEDULER_TOKENS = EnvStr("raw")
     # Most batched requests one /generate HTTP call may expand into.
     SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ = EnvInt(4096)
 

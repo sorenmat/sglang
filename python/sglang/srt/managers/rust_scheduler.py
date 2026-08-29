@@ -464,14 +464,15 @@ class RustCoreDriver:
     def __init__(self, sched):
         mod = load_module()
         assert mod is not None, "core stage requires the _scheduler module"
+        self._mod = mod
         self.sched = sched
         self.cfg = build_rust_config(
             sched.server_args,
             sched.tree_cache,
             page_size=sched.page_size,
         )
-        tree_policy = getattr(sched.tree_cache, "eviction_policy", "lru")
-        self.core = mod.SchedulerCore(self.cfg, tree_policy)
+        self.tree_policy = getattr(sched.tree_cache, "eviction_policy", "lru")
+        self.core = mod.SchedulerCore(self.cfg, self.tree_policy)
         self.rid_to_core: Dict[str, int] = {}
         self.pool_idx: Dict[int, int] = {}  # core_idx -> real req pool idx
         self.core_apply = str(envs.SGLANG_RUST_CORE_APPLY.get()) == "1"
@@ -483,6 +484,19 @@ class RustCoreDriver:
 
     def _rid_to(self, rid: str) -> Optional[int]:
         return self.rid_to_core.get(rid)
+
+    def reset(self) -> None:
+        """Recreate the core and clear per-request bookkeeping.
+
+        Test-only: the live replay A/B (plan §4.2) re-drives a session
+        after flushing the Python engine state, so the core must come
+        back from a clean tree to stay in lock-step with the flushed
+        Python tree cache.
+        """
+        self.core = self._mod.SchedulerCore(self.cfg, self.tree_policy)
+        self.rid_to_core.clear()
+        self.pool_idx.clear()
+        self.arrival = 0
 
     def _trace_events(self, events, **extra) -> None:
         if self.trace is not None and events:
@@ -516,6 +530,34 @@ class RustCoreDriver:
         )
         self.arrival += 1
         self.rid_to_core[req.rid] = int(result[0])
+        if self.trace is not None:
+            self.trace.record(
+                kind="ingress",
+                rid=req.rid,
+                origin=self._origin_for_trace(origin),
+                origin_len=len(origin),
+                max_new_tokens=int(
+                    getattr(req.sampling_params, "max_new_tokens", 0) or 0
+                ),
+                priority=int(getattr(req, "priority", 0) or 0),
+                ignore_eos=bool(
+                    getattr(req.sampling_params, "ignore_eos", False)
+                ),
+                arrival_seq=self.arrival - 1,
+            )
+
+    def _origin_for_trace(self, origin: List[int]) -> Any:
+        """Raw token ids by default; `SGLANG_TRACE_SCHEDULER_TOKENS=hash`
+        stores a sha256 fingerprint + length instead (keeps captures small
+        and content-free, plan §4.2)."""
+        mode = str(envs.SGLANG_TRACE_SCHEDULER_TOKENS.get()).lower()
+        if mode == "hash":
+            import hashlib
+
+            return hashlib.sha256(
+                "".join(str(t) for t in origin).encode()
+            ).hexdigest()
+        return origin
 
     def on_abort(self, rid: str) -> None:
         """A waiting request was removed from the queue (abort)."""
@@ -527,12 +569,13 @@ class RustCoreDriver:
             for event in events:
                 apply_event(self.sched, event)
         else:
-            self._trace_events(events, op="drop")
+            # rid so the replay feeder knows which request to drop.
+            self._trace_events(events, op="drop", rid=rid)
         self.rid_to_core.pop(rid, None)
 
     def apply_result(self, batch) -> None:
         """Fold one executed batch's results into the core."""
-        rows, kv_rows = [], []
+        rows, kv_rows, rids, kv_lens = [], [], [], []
         req_to_token = self.sched.req_to_token_pool.req_to_token
         is_decode = batch.forward_mode.is_decode()
         for req in batch.reqs:
@@ -542,6 +585,7 @@ class RustCoreDriver:
             if req.req_pool_idx is not None:
                 self.pool_idx[core_idx] = int(req.req_pool_idx)
             accepted = [int(req.output_ids[-1])] if req.output_ids else []
+            rids.append(req.rid)
             rows.append(
                 {
                     "accepted": accepted,
@@ -549,6 +593,7 @@ class RustCoreDriver:
                     "finish_reason": _finish_reason_int(req),
                 }
             )
+            kv_len: Optional[int] = None
             if req.req_pool_idx is not None:
                 if is_decode:
                     fill = len(req.origin_input_ids) + len(req.output_ids)
@@ -562,11 +607,13 @@ class RustCoreDriver:
                         if er is not None
                         else len(req.origin_input_ids) + len(req.output_ids) - 1
                     )
+                kv_len = fill
                 if self.exact_values:
                     values = [int(x) for x in req_to_token[req.req_pool_idx, :fill].tolist()]
                 else:
                     values = [0] * fill
                 kv_rows.append({"core_idx": core_idx, "row": values})
+            kv_lens.append(kv_len)
         if rows:
             events = self.core.apply_result(rows, kv_rows)
             if self.core_apply:
@@ -576,8 +623,15 @@ class RustCoreDriver:
                 self.trace.record(
                     kind="core",
                     op="apply_result",
-                    result=[[len(r["accepted"]), r["finished"],
+                    rids=rids,
+                    # The accepted token VALUES (not just the count): they are
+                    # the tree-key tail (origin + out) the replayer needs to
+                    # reproduce prefix matches.
+                    result=[[list(r["accepted"]), r["finished"],
                              r["finish_reason"]] for r in rows],
+                    # Per-row committed KV fill length (None = no pool row);
+                    # the replay feeder rebuilds zero-filled kv_rows from it.
+                    kv_lens=kv_lens,
                     events=[_jsonable(e) for e in events],
                 )
 
@@ -597,6 +651,7 @@ class RustCoreDriver:
                 kind="core",
                 op="plan",
                 plan=_jsonable(plan),
+                env=_jsonable(env),
                 events=[_jsonable(e) for e in events],
             )
 
@@ -685,4 +740,14 @@ def attach(sched) -> Dict[str, Any]:
         for driver in drivers.values():
             if isinstance(driver, (RustPlannerShadow, RustCoreDriver)):
                 driver.trace = recorder
+        core = drivers.get("core")
+        if isinstance(core, RustCoreDriver):
+            # Session header: the replay feeder (scripted_runtime/replay.py)
+            # rebuilds the exact core config from this line.
+            recorder.record(
+                kind="cfg",
+                cfg=core.cfg,
+                tree_policy=core.tree_policy,
+                stage=stage,
+            )
     return drivers
