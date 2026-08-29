@@ -22,8 +22,33 @@ from sglang.srt.utils.common import (
 logger = logging.getLogger(__name__)
 
 
+def _normalize_mamba_full_memory_ratio(server_args: Any) -> None:
+    """Normalize --mamba-full-memory-ratio to either the string 'auto' or a
+    positive float. The CLI type parser already does this for command-line
+    input; this also covers programmatic construction (Engine / tests)."""
+    value = getattr(server_args, "mamba_full_memory_ratio", None)
+    if isinstance(value, str):
+        if value.strip().lower() == "auto":
+            server_args.mamba_full_memory_ratio = "auto"
+            return
+        try:
+            value = float(value)
+        except ValueError:
+            raise ValueError(
+                f"--mamba-full-memory-ratio must be a positive float or 'auto', "
+                f"got {value!r}."
+            )
+    if not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(
+            f"--mamba-full-memory-ratio must be a positive float or 'auto', "
+            f"got {value!r}."
+        )
+    server_args.mamba_full_memory_ratio = float(value)
+
+
 def handle_mamba_backend(server_args: Any):
     cfg = resolving_view(server_args)
+    _normalize_mamba_full_memory_ratio(server_args)
     if cfg.mamba_cache_philox_rounds < 0:
         raise ValueError("--mamba-cache-philox-rounds must be non-negative.")
 

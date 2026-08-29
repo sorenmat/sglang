@@ -357,6 +357,15 @@ LINEAR_ATTN_KERNEL_BACKEND_CHOICES = [
 ]
 add_linear_attn_kernel_backend_choices = LINEAR_ATTN_KERNEL_BACKEND_CHOICES.extend
 
+
+def _parse_mamba_full_memory_ratio(value):
+    """Accepts either a float ratio or the string 'auto' (derive the split
+    from the target workload instead of a fixed ratio)."""
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    return float(value)
+
+
 # --------------------------------------------------------------------------
 # Add new extension points at the end of the matching group above. A new
 # choice list is inlined into its field by default; hoisting one here makes
@@ -736,6 +745,32 @@ class ServerArgs:
         "Enable dynamic chunk size adjustment for pipeline parallelism. When enabled, chunk sizes are dynamically calculated based on fitted function to maintain consistent execution time across chunks.",
         NS("schedule"),
     ] = False
+    enable_adaptive_prefill: A[
+        bool,
+        "Adapt chunked-prefill scheduling to decode pressure. Running decode "
+        "requests get a decode-latency budget (--decode-latency-budget-ms): "
+        "prefill chunks shrink so their projected cost fits in the remaining "
+        "budget, and when the budget is already exceeded the iteration is "
+        "yielded to decode before admitting new prefill. Targets agent-style "
+        "traffic (bursty tool-return prefills alongside steady decoding). "
+        "Currently disabled under DP attention and PP dynamic chunking.",
+        NS("schedule"),
+    ] = False
+    decode_latency_budget_ms: A[
+        float,
+        "Decode latency budget in milliseconds used by "
+        "--enable-adaptive-prefill: the target upper bound on how long running "
+        "decode requests wait between decode iterations while prefill work is "
+        "scheduled.",
+        NS("schedule"),
+    ] = 50.0
+    adaptive_prefill_min_chunk_tokens: A[
+        int,
+        "Floor for chunked-prefill chunks shrunk by --enable-adaptive-prefill; "
+        "below this the scheduler yields the iteration to decode instead of "
+        "shrinking further.",
+        NS("schedule"),
+    ] = 2048
     max_prefill_tokens: A[
         int,
         Arg(
@@ -2611,10 +2646,15 @@ class ServerArgs:
         NS("exec.mamba"),
     ] = 0
     mamba_full_memory_ratio: A[
-        float,
+        Union[float, str],
         Arg(
-            help="The ratio of mamba state memory to full kv cache memory.",
+            help="The ratio of mamba state memory to full kv cache memory. Set to "
+            "'auto' to size the mamba/linear-attention state pool for the target "
+            "concurrency (--max-running-requests, or derived from the model context "
+            "length when unset) and give the remaining budget to the KV cache, "
+            "instead of splitting free memory by a fixed ratio.",
             resolvable=True,
+            type_parser=_parse_mamba_full_memory_ratio,
         ),
         NS("schedule"),
     ] = 0.9

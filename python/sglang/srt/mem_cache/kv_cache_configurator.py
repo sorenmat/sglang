@@ -161,14 +161,26 @@ MAMBA_CACHE_V2_ADDITIONAL_RATIO_OVERLAP_LAZY = 1
 MAMBA_CACHE_V2_ADDITIONAL_RATIO_NO_OVERLAP = 1
 MAMBA_CACHE_V2_ADDITIONAL_RATIO_NO_BUFFER = 1
 
+# --mamba-full-memory-ratio auto: share of the rest-memory budget the state
+# pool may take at most; the rest flows to KV. The cap only binds when the
+# target concurrency demands more state memory than the budget can spare.
+AUTO_MAMBA_MAX_REST_SHARE = 0.85
+
+
+def _mamba_full_memory_ratio_is_auto() -> bool:
+    """Whether --mamba-full-memory-ratio is set to 'auto' (workload-derived
+    sizing instead of a fixed split). Module-level so duck-typed callers of
+    _handle_max_mamba_cache (tests) don't need the method."""
+    value = get_schedule().mamba_full_memory_ratio
+    return isinstance(value, str) and value.strip().lower() == "auto"
+
 
 def _pp_local_per_request_bytes(
     total_bytes: int,
     layer_ids: list[int],
     start_layer: int,
     end_layer: int,
-) -> int:
-    # BaseLinearStateParams reports global bytes, but PP pools allocate only local
+) -> int:    # BaseLinearStateParams reports global bytes, but PP pools allocate only local
     # layers; charge this stage its proportional per-request share.
     if not layer_ids:
         return 0
@@ -1886,10 +1898,110 @@ class KVCacheConfigurator:
 
         return int(rest_memory * (1 << 30))  # return in bytes
 
+    def _kv_cell_size_bytes(self) -> int:
+        """Bytes/token of the target-side KV pool (incl. draft KV surcharges),
+        used by 'auto' sizing to balance state vs KV for a target context."""
+        from sglang.srt.model_executor.pool_configurator import (
+            create_memory_pool_configurator,
+        )
+
+        return int(getattr(create_memory_pool_configurator(self), "_cell_size", 0) or 0)
+
+    def _auto_mamba_pool_size(
+        self,
+        *,
+        total_rest_memory: float,
+        stage_per_req: int,
+        replayssm_ring_per_req: int,
+        has_spec_dec: bool,
+        replayssm_active: bool,
+    ) -> tuple[int, int]:
+        """'auto' sizing: fit the state pool to the target concurrency exactly
+        and let the KV cache take the remainder of the rest-memory budget.
+
+        A fixed ratio strands memory on one side or the other: an undersized
+        state pool silently caps effective concurrency (each running request
+        holds several state slots, more under speculative decoding), an
+        oversized one starves KV. The target concurrency is
+        --max-running-requests when set; otherwise as many full-context
+        requests as the combined per-request footprint allows.
+
+        Returns (max_mamba_cache_size, intermediate_bytes): the persistent
+        state-slot count K and the spec-decode intermediate-state bytes the
+        pool will additionally allocate (both charged against the KV budget
+        by the caller).
+        """
+        total_bytes = int(total_rest_memory * (1 << 30))
+        per_slot = stage_per_req + replayssm_ring_per_req
+        slots_per_req = self._calculate_mamba_ratio()
+        draft_tokens = (
+            get_spec().speculative_num_draft_tokens
+            if (has_spec_dec and not replayssm_active)
+            else 0
+        )
+        if draft_tokens is None:
+            draft_tokens = 0
+
+        target_reqs = None
+        if get_schedule().max_running_requests is not None:
+            target_reqs = get_schedule().max_running_requests // self.ps.attn_dp_size
+        else:
+            cell_size = self._kv_cell_size_bytes()
+            context_len = max(int(self.model_config.context_len), 1)
+            per_request_total = (
+                slots_per_req * per_slot
+                + draft_tokens * stage_per_req
+                + context_len * cell_size
+            )
+            if per_request_total > 0:
+                target_reqs = int(total_bytes // per_request_total)
+        if target_reqs is None or target_reqs < 1:
+            target_reqs = 1
+
+        # Exact integer sizing (the generic ratio path's float joint solve
+        # floors a slot below the intended concurrency). Same accounting:
+        # (K + 1) persistent slots plus (capped_reqs + 1) intermediate states.
+        k = target_reqs * slots_per_req
+        budget = int(total_bytes * AUTO_MAMBA_MAX_REST_SHARE)
+        max_affordable_k = (
+            budget - per_slot - (target_reqs + 1) * draft_tokens * stage_per_req
+        ) // per_slot
+        capped = k > max_affordable_k
+        if capped:
+            k = max(max_affordable_k, 0)
+        capped_reqs = min(target_reqs, k // slots_per_req) if slots_per_req else 0
+        intermediate_bytes = (capped_reqs + 1) * draft_tokens * stage_per_req
+
+        mamba_bytes = (k + 1) * per_slot + intermediate_bytes
+        effective_ratio = mamba_bytes / max(total_bytes - mamba_bytes, 1)
+        get_context().override(
+            "mamba_full_memory_ratio_auto",
+            mamba_full_memory_ratio=round(effective_ratio, 4),
+        )
+        logger.info(
+            "mamba-full-memory-ratio auto: target concurrency=%d reqs, %d state "
+            "slots/req (spec draft tokens=%d) -> %d state slots + %.2f GB "
+            "intermediates (%.2f GB of %.2f GB rest, effective ratio %.3f); "
+            "KV cache gets the remaining %.2f GB.%s",
+            target_reqs,
+            slots_per_req,
+            draft_tokens,
+            k,
+            intermediate_bytes / (1 << 30),
+            mamba_bytes / (1 << 30),
+            total_bytes / (1 << 30),
+            effective_ratio,
+            (total_bytes - mamba_bytes) / (1 << 30),
+            ""
+            if not capped
+            else " Target concurrency exceeds the state-memory share; effective "
+            "concurrency will be capped (see the mamba cap warning).",
+        )
+        return k, intermediate_bytes
+
     def _calculate_mamba_ratio(self) -> int:
         if get_memory().disable_radix_cache:
             return 1
-
         skip_decode_lock = envs.SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK.get()
         base = MAMBA_CACHE_SIZE_MAX_RUNNING_REQUESTS_RATIO - (
             MAMBA_CACHE_BASE_RATIO_DROP_ON_SKIP if skip_decode_lock else 0
@@ -1971,7 +2083,9 @@ class KVCacheConfigurator:
                     "max_running_requests is capped to %d by the mamba state "
                     "cache (max_mamba_cache_size=%d, %d state slots per "
                     "request). To raise it: increase --mamba-full-memory-ratio "
-                    "or --max-mamba-cache-size, or halve the state size with "
+                    "(or set it to 'auto' to size the state pool from the "
+                    "target concurrency), use --max-mamba-cache-size, or "
+                    "halve the state size with "
                     "--mamba-ssm-dtype bfloat16.",
                     mamba_cap,
                     get_schedule().max_mamba_cache_size,
@@ -2147,17 +2261,38 @@ class KVCacheConfigurator:
             assert stage_per_req > 0
             per_req = stage_per_req
 
-            # Solve jointly for max_mamba_cache_size (K), including the pool's
-            # +1 padding slot on both buffers (see memory_pool.py):
-            #   (K + 1) * per_req + (K / ratio + 1) * D * per_req = mamba_budget_bytes
-            mamba_budget = (
-                total_rest_memory
-                * get_schedule().mamba_full_memory_ratio
-                / (1 + get_schedule().mamba_full_memory_ratio)
-            )
-            mamba_budget_bytes = mamba_budget * (1 << 30)
-
-            if has_spec_dec and not replayssm_active:
+            if _mamba_full_memory_ratio_is_auto():
+                # 'auto': size the state pool for the target concurrency and
+                # give KV the remainder, instead of a fixed split. Exact
+                # integer sizing (the float joint solve below floors a slot
+                # below the intended concurrency).
+                k, intermediate_bytes = self._auto_mamba_pool_size(
+                    total_rest_memory=total_rest_memory,
+                    stage_per_req=stage_per_req,
+                    replayssm_ring_per_req=replayssm_ring_per_req,
+                    has_spec_dec=has_spec_dec,
+                    replayssm_active=replayssm_active,
+                )
+                source = (
+                    "mamba_pool.memory_budget_spec_auto"
+                    if has_spec_dec
+                    else "mamba_pool.memory_budget_auto"
+                )
+                get_context().override(source, max_mamba_cache_size=k)
+                if intermediate_bytes:
+                    total_rest_memory = total_rest_memory - (
+                        intermediate_bytes / (1 << 30)
+                    )
+            elif has_spec_dec and not replayssm_active:
+                # Solve jointly for max_mamba_cache_size (K), including the
+                # pool's +1 padding slot on both buffers (see memory_pool.py):
+                #   (K + 1) * per_req + (K / ratio + 1) * D * per_req = mamba_budget_bytes
+                mamba_budget = (
+                    total_rest_memory
+                    * get_schedule().mamba_full_memory_ratio
+                    / (1 + get_schedule().mamba_full_memory_ratio)
+                )
+                mamba_budget_bytes = mamba_budget * (1 << 30)
                 ratio = self._calculate_mamba_ratio()
                 D = get_spec().speculative_num_draft_tokens
                 # Joint solve: main_state + intermediate = mamba_budget
@@ -2177,6 +2312,12 @@ class KVCacheConfigurator:
                 intermediate_size = per_req * (capped_reqs + 1) * D
                 total_rest_memory = total_rest_memory - (intermediate_size / (1 << 30))
             else:
+                mamba_budget = (
+                    total_rest_memory
+                    * get_schedule().mamba_full_memory_ratio
+                    / (1 + get_schedule().mamba_full_memory_ratio)
+                )
+                mamba_budget_bytes = mamba_budget * (1 << 30)
                 per_slot = per_req + replayssm_ring_per_req
                 get_context().override(
                     "mamba_pool.memory_budget",
