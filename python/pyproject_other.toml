@@ -230,7 +230,7 @@ sglang = "sglang.cli.main:main"
 # NOTE: setup.py reads this with a line regex, not a TOML parser — keep the
 # assignment on a single line.
 [tool.sglang]
-rust-extensions = ["multimodal"]
+rust-extensions = ["multimodal", "scheduler"]
 
 [tool.setuptools.package-data]
 "sglang" = [
