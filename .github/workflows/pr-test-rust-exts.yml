@@ -1,19 +1,23 @@
 name: PR Test (Rust extensions)
 
-# In-crate checks for the Rust extensions bundled with the `sglang` wheel
-# (rust/sglang-mm). The pyo3 bindings themselves are exercised by the Python
-# unit suite (base-a-test-cpu), which builds the extensions from source; this
-# job covers the pure-Rust core, exactly as sglang-server links it, plus lints.
+# In-crate checks for the Rust crates bundled with the `sglang` wheel
+# (rust/sglang-mm, rust/sglang-radix, rust/sglang-scheduler). The pyo3
+# bindings themselves are exercised by the Python unit suite
+# (base-a-test-cpu), which builds the extensions from source; these jobs
+# cover the pure-Rust core, exactly as it is linked, plus lints.
 #
-# Scoped to sglang-mm on purpose: sglang-server and sglang-grpc have no
-# in-crate test suite yet, so a `rust/**` trigger would spawn a job that does
-# not actually cover the changed crate. Widen the paths together with the job.
+# Scoped to the three crates that have an in-crate test suite on purpose:
+# sglang-server and sglang-grpc have none yet, so a `rust/**` trigger would
+# spawn a job that does not actually cover the changed crate. Widen the paths
+# together with the job.
 
 on:
   push:
     branches: [ main ]
     paths:
       - "rust/sglang-mm/**"
+      - "rust/sglang-radix/**"
+      - "rust/sglang-scheduler/**"
       - "rust/Cargo.toml"
       - ".github/workflows/pr-test-rust-exts.yml"
   pull_request:
@@ -21,6 +25,8 @@ on:
     types: [opened, synchronize, reopened, labeled]
     paths:
       - "rust/sglang-mm/**"
+      - "rust/sglang-radix/**"
+      - "rust/sglang-scheduler/**"
       - "rust/Cargo.toml"
       - ".github/workflows/pr-test-rust-exts.yml"
   workflow_dispatch:
@@ -68,3 +74,76 @@ jobs:
       # implementations and results are required to be identical.
       - name: cargo test (parallel shape)
         run: cargo test --features parallel
+
+  sglang-radix-unit:
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'run-ci')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'run-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust/sglang-radix
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The workspace root owns Cargo.lock and target/.
+          workspaces: rust
+
+      - name: cargo clippy (all targets)
+        run: |
+          rustup component add clippy
+          cargo clippy --all-targets -- -D warnings
+
+      # Pure-Rust radix core: golden + property tests.
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo bench (compile-check the criterion benches)
+        run: cargo bench --no-run
+
+  sglang-scheduler-unit:
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'run-ci')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'run-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust/sglang-scheduler
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The workspace root owns Cargo.lock and target/.
+          workspaces: rust
+
+      - name: cargo clippy (all targets)
+        run: |
+          rustup component add clippy
+          cargo clippy --all-targets -- -D warnings
+
+      # The rlib shape (planner / adder / ntr / policy / core), exactly what
+      # the cdylib links: no pyo3.
+      - name: cargo test (rlib shape — no pyo3)
+        run: cargo test
+
+      - name: cargo bench (compile-check the criterion benches)
+        run: cargo bench --no-run
+
+      # The wheel's shape: build the PyO3 extension and drive it through the
+      # in-repo smoke test (loads the .so, no model / GPU needed).
+      - name: cargo build (pyo3 cdylib shape)
+        run: cargo build --features python
+
+      - name: Run pyo3 smoke test
+        run: python3 smoke_test.py

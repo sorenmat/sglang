@@ -337,6 +337,12 @@ crate-type = ["cdylib"]
                 "sglang_mm_core",
                 ("python", "parallel"),
             ),
+            (
+                "sglang.srt.rust_extensions._scheduler",
+                "sglang-scheduler",
+                "sglang_scheduler",
+                ("python",),
+            ),
         ):
             crate = rust_extension._discover_crate(
                 rust_extension._RUST_WORKSPACE, python_module
