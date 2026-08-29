@@ -177,7 +177,12 @@ def main():
     mode, bif, prefill, decode = plan
     d_decode, d_fin, *_ = decode
     assert d_decode == [0] and d_fin == [1], (d_decode, d_fin)
-    print("SchedulerCore: ok")
+    # user-initiated abort of a running req: KV free + abort notice.
+    events = core.drop(0)
+    assert events[0][0] == "free_segments" and events[0][2] == [(0, 31)], events
+    assert events[1][:2] == ("finished", 0) and events[1][3] == 2, events
+    assert core.running() == []
+    print("SchedulerCore.drop: ok")
 
     print("ALL SMOKE TESTS PASSED")
 

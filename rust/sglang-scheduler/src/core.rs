@@ -453,6 +453,58 @@ impl SchedulerCore {
         r.protected_len = new_protected;
     }
 
+    /// User-initiated abort (Python `abort_request`): drop the request from
+    /// waiting, running, or the pending last-batch merge, release its KV row
+    /// and prefix lock, and recycle the slot. Fresh waiting reqs carry no
+    /// resources (the release steps are no-ops for them). Returns the events
+    /// Python must execute (KV frees + the abort stream notice).
+    pub fn drop_request(&mut self, core_idx: u32) -> Vec<Event> {
+        let mut events = Vec::new();
+        let core = core_idx as usize;
+        if core >= self.reqs.len() {
+            return events;
+        }
+        let queued = self.waiting.contains(&core_idx)
+            || self.running.contains(&core_idx)
+            || self.pending_merge.contains(&core_idx);
+        if !queued {
+            return events; // finished or unknown
+        }
+        self.waiting.retain(|&i| i != core_idx);
+        self.running.retain(|&i| i != core_idx);
+        self.pending_merge.retain(|&i| i != core_idx);
+        if self.chunked == Some(core_idx) {
+            self.chunked = None;
+        }
+        let (pool_idx, committed, last_node) = {
+            let r = &self.reqs[core];
+            (r.pool_idx, r.committed_len, r.last_node)
+        };
+        if last_node != ROOT {
+            self.tree.dec_lock_ref(last_node);
+        }
+        if committed > 0 {
+            events.push(Event::FreeSegments {
+                pool_idx,
+                ranges: vec![(0, committed)],
+            });
+        }
+        let out_len = {
+            let r = &mut self.reqs[core];
+            let n = r.out.len() as u32;
+            r.finished = true;
+            r.finish_reason = 4; // abort
+            n
+        };
+        events.push(Event::Finished {
+            core_idx,
+            reason: 4,
+            out_len,
+        });
+        self.free.push(core_idx);
+        events
+    }
+
     /// The next-batch decision (ingress + results already applied).
     pub fn plan(&mut self, env: &StepEnv) -> StepOut {
         let mut events = Vec::new();
@@ -876,6 +928,100 @@ mod tests {
         assert_eq!(d.decode.len(), 1);
         assert_eq!(d.finished_removed, vec![1]);
         assert_eq!(core.running(), &[idx[0]]);
+    }
+
+    #[test]
+    fn drop_request_waiting_and_running() {
+        let mut core = SchedulerCore::new(cfg(), EvictionPolicy::Lru);
+        let idx = core.ingest(vec![
+            IngressReq {
+                rid: 1,
+                pool_idx: 0,
+                origin: origin(16, 1),
+                max_new_tokens: 16,
+                priority: 0,
+                arrival_seq: 0,
+                routing_key: 0,
+                ignore_eos: false,
+            },
+            IngressReq {
+                rid: 2,
+                pool_idx: 1,
+                origin: origin(16, 2),
+                max_new_tokens: 16,
+                priority: 0,
+                arrival_seq: 1,
+                routing_key: 0,
+                ignore_eos: false,
+            },
+        ]);
+
+        // Waiting drop: no resources yet, just the abort notice.
+        let events = core.drop_request(idx[0]);
+        assert_eq!(
+            events,
+            vec![Event::Finished {
+                core_idx: idx[0],
+                reason: 4,
+                out_len: 0
+            }]
+        );
+        assert_eq!(core.waiting(), &[idx[1]]);
+
+        // Only req 2 is admitted and runs to decode.
+        let out = core.plan(&env());
+        assert_eq!(out.plan.prefill.as_ref().unwrap().admitted.len(), 1);
+        let events = core.apply_result(
+            &[ResultRow {
+                accepted: vec![5],
+                finished: false,
+                finish_reason: 0,
+            }],
+            &[kv_row(idx[1], 16, 300)],
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::StashRowWrite { .. }))
+                .count(),
+            1
+        );
+        let out = core.plan(&env());
+        assert_eq!(out.plan.mode, crate::types::MODE_DECODE);
+        assert_eq!(core.running(), &[idx[1]]);
+        assert_eq!(core.tree().protected_size(), 16);
+
+        // Running drop: free the whole KV row, release the admission lock.
+        let events = core.drop_request(idx[1]);
+        assert_eq!(
+            events,
+            vec![
+                Event::FreeSegments {
+                    pool_idx: 1,
+                    ranges: vec![(0, 16)]
+                },
+                Event::Finished {
+                    core_idx: idx[1],
+                    reason: 4,
+                    out_len: 1
+                },
+            ]
+        );
+        assert!(core.running().is_empty());
+        assert_eq!(core.tree().protected_size(), 0);
+
+        // Slot recycling: the dropped slot (LIFO free stack) is reused.
+        let idx2 = core.ingest(vec![IngressReq {
+            rid: 3,
+            pool_idx: 2,
+            origin: origin(8, 3),
+            max_new_tokens: 8,
+            priority: 0,
+            arrival_seq: 0,
+            routing_key: 0,
+            ignore_eos: false,
+        }]);
+        assert_eq!(idx2, vec![idx[1]]);
     }
 
     #[test]

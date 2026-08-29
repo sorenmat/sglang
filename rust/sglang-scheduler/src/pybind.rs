@@ -636,6 +636,13 @@ impl SchedulerCore {
         events_to_py(&events, py)
     }
 
+    /// User-initiated abort of a queued request (Python `abort_request`).
+    /// Returns the events to execute (KV frees + abort notice).
+    fn drop(&mut self, py: Python<'_>, core_idx: u32) -> PyResult<Py<PyAny>> {
+        let events = py.detach(|| self.core.drop_request(core_idx));
+        events_to_py(&events, py)
+    }
+
     /// Plan the next batch. Returns `(plan, events)`; `events` carries the
     /// tree evictions and KV frees to run before the batch's allocations.
     fn plan(&mut self, py: Python<'_>, env: InStepEnv) -> PyResult<Py<PyAny>> {
