@@ -899,3 +899,7 @@ class TestRustHiRadixParity(CustomTestCase):
             sorted(self._rs_key(i) for i in rs.evictable_host_leaves()),
             sorted([tuple(q[2:]), tuple(z3)]),
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

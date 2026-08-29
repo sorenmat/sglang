@@ -14,6 +14,10 @@ on:
         description: 'Caller job key; used for partitions[suite] lookup.'
         type: string
         required: true
+      display_name:
+        description: 'Job display name override; defaults to self_name. Set it when re-dispatching the same suite under different flags so the UI and wait-gate prefix matching stay distinct.'
+        type: string
+        default: ''
       runner_config:
         description: 'Key in scripts/ci/runner_configs.yml. Resolves install script, artifact version, install timeout, runs-on label, and rdma_devices.'
         type: string
@@ -52,6 +56,10 @@ on:
         default: '25'
       extra_pytest_path:
         description: 'pytest path to run after the suite (b200 FA4 jit_kernel tests). Empty skips.'
+        type: string
+        default: ''
+      rust_scheduler_stage:
+        description: 'SGLANG_RUST_SCHEDULER value exported to the Run test step (plan §12 per-stage GPU gates: radix, core). Empty = unset, which Python treats as "off".'
         type: string
         default: ''
       rust_ext_artifact:
@@ -98,7 +106,7 @@ env:
 
 jobs:
   run:
-    name: ${{ inputs.self_name }} (${{ matrix.partition }})
+    name: ${{ inputs.display_name || inputs.self_name }} (${{ matrix.partition }})
     # Runs on schedule / parallel-dispatch / non-failed PR with main_package or sgl_kernel changes.
     # Temporarily skip the broken GB300 runner before GitHub tries to allocate it.
     if: |
@@ -211,6 +219,9 @@ jobs:
           # Left unconditional because an `env:` key cannot be omitted, and an empty
           # value would reach the runai streamer as a malformed limit.
           RUNAI_STREAMER_MEMORY_LIMIT: 0
+          # Unconditional like RUNAI_STREAMER_MEMORY_LIMIT: an empty value is
+          # safe (Python's flag parsing treats "" as "off").
+          SGLANG_RUST_SCHEDULER: ${{ inputs.rust_scheduler_stage }}
         run: |
           cd test
           python3 run_suite.py --hw cuda --suite ${{ inputs.self_name }} \

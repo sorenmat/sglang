@@ -714,6 +714,12 @@ Not scheduled; decision is data-driven from Phase 3 profiling.
   `SGLANG_RUST_SCHEDULER` at each flag stage before the stage's default
   flips; CI matrix adds one GPU job per stage (`radix`, `core`), reusing
   `_pr-test-rust-ext-build.yml` for the extension build cache.
+  In place: `pr-test.yml` re-dispatches the `base-a-test-1-gpu-small`
+  suite as `rust-scheduler-gate-{radix,core}` — the `_pr-test-stage.yml`
+  `rust_scheduler_stage` input exports the flag to the `Run test` step
+  (empty = "off"), and the `display_name` input keeps the jobs out of the
+  `wait-for-base-a` prefix gate; both consume the `rust-ext-build`
+  prebuilt-extension artifact.
 - **Determinism:** greedy-decode e2e outputs byte-identical between
   Python and Rust paths for the same seed (this is also the A/B
   correctness check for any throughput claim).
@@ -806,6 +812,13 @@ Done (this effort):
       `rust/rfc/0002-sglang-scheduler.md` (upstream contribution drafts —
       the PRs themselves open on the target host, contribution order
       `sglang-radix` → planner per §13).
+- [x] M7 CI gates (§12): one GPU job per flippable stage —
+      `rust-scheduler-gate-{radix,core}` in `pr-test.yml` re-run the
+      `base-a-test-1-gpu-small` suite with `SGLANG_RUST_SCHEDULER=radix` /
+      `core` (new `_pr-test-stage.yml` `rust_scheduler_stage` +
+      `display_name` inputs; prebuilt ext via the `rust-ext-build`
+      artifact). `stream` stays host-gated: it implies `SGLANG_RUST_SERVER`
+      and gates the flip itself.
 
 Remaining (needs the target GPU host, in plan order):
 1. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
