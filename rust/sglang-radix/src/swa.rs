@@ -28,6 +28,7 @@
 use std::collections::HashMap;
 
 use crate::key::{common_prefix_len, RadixKey};
+use crate::lru::{Lru, LRUList};
 use crate::tree::{ChildKey, Head, NodeId, ROOT};
 
 /// One SWA tree node. `key` is flattened (one element per token, or two
@@ -52,190 +53,6 @@ pub struct SWANode {
     /// Sanity-check tick (mirrors the Python `last_access_time` float).
     pub last_access: u64,
     pub id: NodeId,
-}
-
-/// A list position: a real node or one of the two dummy sentinels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lru {
-    /// Dummy head, the most-recently-used side.
-    Head,
-    /// Dummy tail, the least-recently-used side.
-    Tail,
-    /// A real tree node.
-    Node(NodeId),
-}
-
-impl Lru {
-    fn node(self) -> Option<NodeId> {
-        match self {
-            Lru::Node(id) => Some(id),
-            _ => None,
-        }
-    }
-}
-
-/// Port of `LRUList`. Node ids index the `prev`/`next` arrays; the dummy
-/// head/tail live in `head_next`/`tail_prev`.
-#[derive(Debug, Default, Clone)]
-pub struct LRUList {
-    /// Predecessor of node `id`; `None` = not in the list.
-    prev: Vec<Option<Lru>>,
-    /// Successor of node `id`; `None` = not in the list.
-    next: Vec<Option<Lru>>,
-    /// First real node after the head; `None` = empty list.
-    head_next: Option<NodeId>,
-    /// Last real node before the tail; `None` = empty list.
-    tail_prev: Option<NodeId>,
-}
-
-impl LRUList {
-    fn grow(&mut self, len: usize) {
-        self.prev.resize_with(len, || None);
-        self.next.resize_with(len, || None);
-    }
-
-    fn in_list(&self, id: NodeId) -> bool {
-        self.prev.get(id as usize).is_some_and(Option::is_some)
-    }
-
-    fn predecessor(&self, l: Lru) -> Lru {
-        match l {
-            Lru::Head => unreachable!("no predecessor of the head"),
-            Lru::Tail => self.tail_prev.map(Lru::Node).unwrap_or(Lru::Head),
-            Lru::Node(id) => self.prev[id as usize].unwrap_or(Lru::Head),
-        }
-    }
-
-    fn successor(&self, l: Lru) -> Lru {
-        match l {
-            Lru::Head => self.head_next.map(Lru::Node).unwrap_or(Lru::Tail),
-            Lru::Tail => unreachable!("no successor of the tail"),
-            Lru::Node(id) => self.next[id as usize].unwrap_or(Lru::Tail),
-        }
-    }
-
-    /// Insert `id` right after `old` (port of `_add_node_after`).
-    fn add_after(&mut self, old: Lru, id: NodeId) {
-        let old_next = self.successor(old);
-        match old {
-            Lru::Head => self.head_next = Some(id),
-            Lru::Node(o) => self.next[o as usize] = Some(Lru::Node(id)),
-            Lru::Tail => unreachable!(),
-        }
-        match old_next {
-            Lru::Tail => self.tail_prev = Some(id),
-            Lru::Node(n) => self.prev[n as usize] = Some(Lru::Node(id)),
-            Lru::Head => unreachable!(),
-        }
-        self.prev[id as usize] = Some(old);
-        self.next[id as usize] = Some(old_next);
-    }
-
-    /// Insert `id` as the most-recently-used node (port of `insert_mru`).
-    fn insert_mru(&mut self, id: NodeId) {
-        debug_assert!(
-            !self.in_list(id),
-            "insert_mru: node {id} already in the list"
-        );
-        self.add_after(Lru::Head, id);
-    }
-
-    fn remove(&mut self, id: NodeId) {
-        let p = self
-            .prev
-            .get(id as usize)
-            .copied()
-            .flatten()
-            .expect("remove: node not in list");
-        let n = self
-            .next
-            .get(id as usize)
-            .copied()
-            .flatten()
-            .expect("remove: node not in list");
-        match p {
-            Lru::Head => self.head_next = n.node(),
-            Lru::Node(x) => self.next[x as usize] = Some(n),
-            Lru::Tail => unreachable!(),
-        }
-        match n {
-            Lru::Tail => self.tail_prev = p.node(),
-            Lru::Node(x) => self.prev[x as usize] = Some(p),
-            Lru::Head => unreachable!(),
-        }
-        self.prev[id as usize] = None;
-        self.next[id as usize] = None;
-    }
-
-    /// Port of `reset_node_mru`: move an existing node to the MRU position.
-    fn reset_mru(&mut self, id: NodeId) {
-        if !self.in_list(id) {
-            return;
-        }
-        self.remove(id);
-        self.insert_mru(id);
-    }
-
-    /// Port of `reset_node_and_parents_mru`: move the `node → root` chain
-    /// to the MRU end, deepest node most recent. For the SWA list,
-    /// tombstoned nodes are skipped (they are not in the list).
-    fn reset_and_parents_mru(
-        &mut self,
-        nodes: &[SWANode],
-        is_swa: bool,
-        mut node: NodeId,
-        root: NodeId,
-    ) {
-        let mut prev_node = Lru::Head;
-        while node != root {
-            let tombstone = nodes[node as usize].swa_tombstone;
-            if !is_swa || !tombstone {
-                debug_assert!(
-                    self.in_list(node),
-                    "reset_and_parents_mru: node {node} not in the {} list",
-                    if is_swa { "swa" } else { "full" }
-                );
-                self.remove(node);
-                self.add_after(prev_node, node);
-                prev_node = Lru::Node(node);
-            }
-            node = nodes[node as usize]
-                .parent
-                .expect("walk reaches the root");
-        }
-    }
-
-    /// Port of `get_lru_no_lock`: least-recent node with lock 0, or `None`.
-    fn get_lru_no_lock(&self, nodes: &[SWANode], is_swa: bool) -> Option<NodeId> {
-        let lock = |id: NodeId| -> u32 {
-            if is_swa {
-                nodes[id as usize].swa_lock_ref
-            } else {
-                nodes[id as usize].full_lock_ref
-            }
-        };
-        let mut x = self.predecessor(Lru::Tail);
-        while let Lru::Node(id) = x {
-            if lock(id) == 0 {
-                return Some(id);
-            }
-            x = self.predecessor(Lru::Node(id));
-        }
-        None
-    }
-
-    /// Port of `get_leaf_lru_no_lock`.
-    fn get_leaf_lru_no_lock(&self, nodes: &[SWANode]) -> Option<NodeId> {
-        let mut x = self.predecessor(Lru::Tail);
-        while let Lru::Node(id) = x {
-            let n = &nodes[id as usize];
-            if n.full_lock_ref == 0 && n.children.is_empty() {
-                return Some(id);
-            }
-            x = self.predecessor(Lru::Node(id));
-        }
-        None
-    }
 }
 
 /// Allocator-free bookkeeping of the KV runs an op wants released.
@@ -484,10 +301,8 @@ impl SWARadixTree {
 
         // `_match_post_processor`: move the matched chain to the MRU end in
         // both lists (the SWA list skips tombstones).
-        self.full_lru
-            .reset_and_parents_mru(&self.nodes, false, best_node, ROOT);
-        self.swa_lru
-            .reset_and_parents_mru(&self.nodes, true, best_node, ROOT);
+        self.chain_mru(false, best_node, ROOT);
+        self.chain_mru(true, best_node, ROOT);
         // The Python post-processor re-stamps `last_access_time` for every
         // node on the chain, deepest first; mirror it with the tick.
         let mut tick = self.tick();
@@ -824,7 +639,7 @@ impl SWARadixTree {
         let mut swa_num_evicted = 0usize;
 
         if full_num_tokens > 0 {
-            let mut x = self.full_lru.get_leaf_lru_no_lock(&self.nodes);
+            let mut x = self.full_get_leaf_lru_no_lock();
             while full_num_evicted < full_num_tokens {
                 let Some(xid) = x else {
                     break;
@@ -863,7 +678,7 @@ impl SWARadixTree {
                 // 5. if the parent became a leaf, restart the LRU scan.
                 let parent = self.nodes[x_after as usize].parent.unwrap_or(ROOT);
                 if self.nodes[parent as usize].children.is_empty() {
-                    x = self.full_lru.get_leaf_lru_no_lock(&self.nodes);
+                    x = self.full_get_leaf_lru_no_lock();
                 } else {
                     x = x_next;
                 }
@@ -871,7 +686,7 @@ impl SWARadixTree {
         }
 
         if swa_num_evicted < swa_num_tokens {
-            let mut x = self.swa_lru.get_lru_no_lock(&self.nodes, true);
+            let mut x = self.swa_get_lru_no_lock();
             while swa_num_evicted < swa_num_tokens {
                 let Some(xid) = x else {
                     break;
@@ -1151,6 +966,59 @@ impl SWARadixTree {
         }
     }
 
+    /// Port of `reset_node_and_parents_mru` on one of the two lists:
+    /// move the `node -> root` chain to the MRU end, deepest node most
+    /// recent; the SWA list skips tombstones (they are not in the list).
+    fn chain_mru(&mut self, is_swa: bool, mut node: NodeId, root: NodeId) {
+        let mut prev_node = Lru::Head;
+        while node != root {
+            let tombstone = self.nodes[node as usize].swa_tombstone;
+            if !is_swa || !tombstone {
+                let lru = if is_swa {
+                    &mut self.swa_lru
+                } else {
+                    &mut self.full_lru
+                };
+                debug_assert!(
+                    lru.in_list(node),
+                    "chain_mru: node {node} not in the {} list",
+                    if is_swa { "swa" } else { "full" }
+                );
+                lru.remove(node);
+                lru.add_after(prev_node, node);
+                prev_node = Lru::Node(node);
+            }
+            node = self.nodes[node as usize]
+                .parent
+                .expect("walk reaches the root");
+        }
+    }
+
+    /// Port of `get_leaf_lru_no_lock` on the full list.
+    fn full_get_leaf_lru_no_lock(&self) -> Option<NodeId> {
+        let mut x = self.full_lru.predecessor(Lru::Tail);
+        while let Lru::Node(id) = x {
+            let n = &self.nodes[id as usize];
+            if n.full_lock_ref == 0 && n.children.is_empty() {
+                return Some(id);
+            }
+            x = self.full_lru.predecessor(Lru::Node(id));
+        }
+        None
+    }
+
+    /// Port of `get_lru_no_lock` on the SWA list.
+    fn swa_get_lru_no_lock(&self) -> Option<NodeId> {
+        let mut x = self.swa_lru.predecessor(Lru::Tail);
+        while let Lru::Node(id) = x {
+            if self.nodes[id as usize].swa_lock_ref == 0 {
+                return Some(id);
+            }
+            x = self.swa_lru.predecessor(Lru::Node(id));
+        }
+        None
+    }
+
     /// Port of `get_prev_leaf_no_lock(from)`: walk the full list from
     /// `from`'s predecessor (more recent) toward the head.
     fn next_leaf_no_lock(&self, from: NodeId) -> Option<NodeId> {
@@ -1289,6 +1157,9 @@ impl SWARadixTree {
 
         let new_id = self.new_node_slot();
         let new_last_access = self.tick();
+        // The tail's stamp must be fresher than the front's (the Python
+        // split re-stamps `child.last_access_time` after construction).
+        let tail_last_access = self.tick();
         {
             let mut children = HashMap::with_capacity(1);
             children.insert(tail_ck, child);
@@ -1307,13 +1178,15 @@ impl SWARadixTree {
             };
         }
         // Mutate the tail node in place; it loses the SWA lock-boundary
-        // marker (the front node keeps it).
+        // marker (the front node keeps it) and gets a fresher stamp than
+        // the front node.
         {
             let c = &mut self.nodes[child as usize];
             c.key = tail_key;
             c.value = Some(tail_value);
             c.parent = Some(new_id);
             c.swa_uuid = None;
+            c.last_access = tail_last_access;
         }
         // Re-parent at the grandparent.
         {

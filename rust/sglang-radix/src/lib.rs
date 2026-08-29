@@ -11,14 +11,21 @@
 //! releases evicted runs through the actual allocator.
 
 mod key;
+mod lru;
+mod mamba;
 mod policy;
 mod swa;
 mod tree;
 
 pub use key::{common_prefix_len, RadixKey};
+pub use lru::{Lru, LRUList};
+pub use mamba::{
+    MambaEvictResult, MambaFreeOps, MambaInsertResult, MambaMatchResult, MambaNode,
+    MambaRadixTree,
+};
 pub use policy::{EvictionPolicy, Prio};
 pub use swa::{
-    FreeOps, LRUList, Lru, SWADecResult, SWAEvictResult, SWAInsertResult, SWAMatchResult,
-    SWANode, SWARecover, SWARadixTree,
+    FreeOps, SWADecResult, SWAEvictResult, SWAInsertResult, SWAMatchResult, SWANode, SWARecover,
+    SWARadixTree,
 };
 pub use tree::{ChildKey, EvictResult, Head, InsertResult, MatchResult, NodeId, RawNode, RadixTree, ROOT};

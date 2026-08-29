@@ -1,12 +1,13 @@
 //! Microbenchmarks M1–M4 from the migration plan: `match_prefix`,
 //! `insert`, `evict(n)`, and lock-ref walks, over realistic coding-agent
 //! shapes (one long shared prefix, many private tails). Plus the M2/1b
-//! SWA dual-counter tree over the same shapes.
+//! SWA dual-counter tree and the M2/1c Mamba (full + SSM) tree over the
+//! same shapes.
 
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use sglang_radix::{EvictionPolicy, RadixKey, RadixTree, SWARadixTree};
+use sglang_radix::{EvictionPolicy, MambaRadixTree, RadixKey, RadixTree, SWARadixTree};
 
 const SHARED: usize = 8192; // shared system prompt
 const TAIL: usize = 1024; // per-agent private tokens
@@ -289,6 +290,111 @@ fn bench_swa_lock_ref(c: &mut Criterion) {
     group.finish();
 }
 
+// ------------------------------------------------------------- Mamba (M2/1c)
+
+const MAMBA_CHUNK: usize = 64; // FLA chunk size (default mamba_cache_chunk_size)
+
+/// Mamba coding-agent shape: same topology as the SWA shape, one mamba
+/// state per inserted leaf (the shared prefix collapses to one node).
+fn build_mamba_agent_tree(agents: usize) -> (MambaRadixTree, Vec<Vec<i64>>, Vec<Vec<i64>>) {
+    let mut tree = MambaRadixTree::new(1, false, MAMBA_CHUNK);
+    let shared: Vec<i64> = (0..SHARED).map(|i| ((i * 7919) % 100_000) as i64).collect();
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    for a in 0..agents {
+        let mut k = shared.clone();
+        let mut v = (0..SHARED).map(|i| 100_000 + i as i64).collect::<Vec<_>>();
+        for j in 0..TAIL {
+            let tok = a as i64 * 10_000 + j as i64;
+            k.push(tok);
+            v.push(5_000_000 + tok);
+        }
+        keys.push(k.clone());
+        values.push(v);
+        let slot = (a as i64 + 1) * 3;
+        tree.insert(&RadixKey::new(&k), &values[a], &[slot], 0);
+    }
+    (tree, keys, values)
+}
+
+fn bench_mamba_match(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mamba_match_prefix");
+    let (tree, keys, _values) = build_mamba_agent_tree(256);
+    let probe = keys[0].clone();
+    let probe_r = RadixKey::new(&probe);
+    group.bench_function("agent_full_hit", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.match_prefix(black_box(&probe_r)));
+        })
+    });
+    group.finish();
+}
+
+fn bench_mamba_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mamba_insert");
+    let (tree, keys, _values) = build_mamba_agent_tree(256);
+    let mut fresh = keys[0].clone();
+    fresh.extend((2_000_000..2_001_024).map(|i| i as i64));
+    let fresh_r = RadixKey::new(&fresh);
+    let fresh_v: Vec<i64> = (0..fresh.len()).map(|i| 8_000_000 + i as i64).collect();
+    group.bench_function("agent_9k_high_overlap", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.insert(black_box(&fresh_r), &fresh_v, &[42], 0));
+        })
+    });
+    group.finish();
+}
+
+fn bench_mamba_evict(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mamba_evict");
+    let (tree, _keys, _values) = build_mamba_agent_tree(256);
+    let total = SHARED * 256 + TAIL * 256;
+    for (frac, label) in [(0.01, "full-1pct"), (0.1, "full-10pct")] {
+        let n = (total as f64 * frac) as usize;
+        group.bench_with_input(format!("agent-256_{label}"), &n, |b, &n| {
+            b.iter(|| {
+                let mut t = tree.clone();
+                let _ = black_box(t.evict(n, 0));
+            })
+        });
+    }
+    // 1 shared internal state + 255 tail states.
+    let m = (256usize as f64 * 0.1) as usize;
+    group.bench_with_input("agent-256_mamba-10pct", &m, |b, &m| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = black_box(t.evict(0, m));
+        })
+    });
+    group.finish();
+}
+
+fn bench_mamba_lock_ref(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mamba_lock_ref_walk");
+    // Deep chain: one node per level; the full walk covers the whole
+    // depth and the mamba lock lands on the leaf alone.
+    let mut tree = MambaRadixTree::new(1, false, MAMBA_CHUNK);
+    let mut prefix: Vec<i64> = Vec::new();
+    let mut leaf: u32 = 0;
+    for level in 0..256usize {
+        prefix.push(level as i64 * 17 + 1);
+        let v: Vec<i64> = (0..=level).map(|i| level as i64 * 1_000_000 + i as i64).collect();
+        let key = RadixKey::new(&prefix);
+        let r = tree.insert(&key, &v, &[level as i64], 0);
+        leaf = r.last_node;
+    }
+    group.bench_function("depth-256", |b| {
+        b.iter(|| {
+            let mut t = tree.clone();
+            let _ = t.inc_lock_ref(black_box(leaf));
+            let _ = t.dec_lock_ref(black_box(leaf));
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_match,
@@ -299,6 +405,10 @@ criterion_group!(
     bench_swa_match,
     bench_swa_insert,
     bench_swa_evict,
-    bench_swa_lock_ref
+    bench_swa_lock_ref,
+    bench_mamba_match,
+    bench_mamba_insert,
+    bench_mamba_evict,
+    bench_mamba_lock_ref
 );
 criterion_main!(benches);

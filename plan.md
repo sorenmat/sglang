@@ -1,6 +1,6 @@
 # Plan: Migrate SGLang's CPU Control Plane to Rust
 
-Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA tree port on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
+Status: in progress (phases 0–2 code complete + §4.2 replay backbone code complete + M2/1b SWA and M2/1c Mamba tree ports on branch `rust-scheduler`; host-gated steps remain) · Owner: Soren · Target: Qwen3.8 (NVFP4) on RTX PRO 6000, 16 concurrent coding agents
 Last updated: 2026-08-29
 
 ## 0. Goal and non-goals
@@ -247,6 +247,31 @@ result (`FreeOps` + `SWARecover`). Exposed as the `SWARadixTree` pyclass in
 against the unmodified Python `SWARadixCache` driven through a recording
 fake `SWATokenToKVPoolAllocator`). The Python-side `SWARadixCacheRust`
 facade + default-flip wiring is M7.
+
+**M2/1c (Mamba hybrid tree) is code-complete on this branch:**
+`rust/sglang-radix/src/mamba.rs` ports the `MambaRadixCache` tree
+semantics: the full/mamba lock-ref pair (full lock = node→root exclusive
+walk, mamba lock = node only, invariant `full_lock_ref >= mamba_lock_ref`),
+the dual LRU model (FULL list holds every non-root node including mamba
+tombstones, MAMBA list holds only live-state nodes), `match_prefix` with
+the run-count best-node check on the current node, the chunk-aligned
+`mamba_branching_seqlen`, insert with `prev_prefix_len` partial frees
+(carrying `start_pos`) and mamba-tombstone revival, and the two-phase
+`evict` (full phase leaf-only with cascade counting; mamba phase with its
+own fresh budget where internal nodes tombstone and leaf deletes free
+full KV without counting it). The shared intrusive LRU was factored out
+of `swa.rs` into `lru.rs` (used by both trees). Allocator calls come
+back as `MambaFreeOps` (`free_segment(run, start_pos)` + mamba frees in
+call order); int8-ckpt/active-pool routing and the deferred COW stay
+caller-side. Exposed as the `MambaRadixTree` pyclass in `sglang-scheduler`
+pybind; verified by 10 Rust unit tests (torch-free), 4 criterion benches
+(match / insert / dual-budget evict / lock walk over the 256-agent shape
+and a depth-256 chain), and
+`test/registered/rust/test_rust_mamba_radix_parity.py` (CPU CI,
+differential against the unmodified Python `MambaRadixCache` driven
+through a recording fake `TokenToKVPoolAllocator` + mamba allocator,
+with `mamba_cache_chunk_size` pinned to 64). The Python-side
+`MambaRadixCacheRust` facade + default-flip wiring is M7.
 
 Host-gated remainder: record the two canonical target-hardware sessions
 (below) and the Python-side M1–M11 baselines for the A/B numbers.

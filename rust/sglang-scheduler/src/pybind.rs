@@ -734,6 +734,170 @@ impl SWARadixTree {
     }
 }
 
+/// Raw `sglang-radix` Mamba (hybrid full + SSM) tree ops — Python
+/// `MambaRadixCacheRust` facade backing (plan.md M2/1c). The allocator
+/// is *not* behind this boundary: every `free_segment(run, start_pos)`
+/// and `free_mamba(run)` the Python tree would make comes back as a
+/// run list instead.
+#[pyclass]
+struct MambaRadixTree {
+    tree: sglang_radix::MambaRadixTree,
+}
+
+#[pymethods]
+impl MambaRadixTree {
+    #[new]
+    fn new(page_size: u32, is_eagle: bool, mamba_cache_chunk_size: u32) -> Self {
+        Self {
+            tree: sglang_radix::MambaRadixTree::new(
+                page_size as usize,
+                is_eagle,
+                mamba_cache_chunk_size as usize,
+            ),
+        }
+    }
+
+    /// `match_prefix(keys)` →
+    /// `(indices, last_node, mamba_branching_seqlen | None)`.
+    fn match_prefix(
+        &mut self,
+        py: Python<'_>,
+        keys: Vec<i64>,
+    ) -> PyResult<(Vec<i64>, u32, Option<u32>)> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.match_prefix(&key)
+        });
+        Ok((
+            r.indices,
+            r.last_node,
+            r.mamba_branching_seqlen
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+        ))
+    }
+
+    /// `insert(keys, values, mamba_values, prev_prefix_len)` →
+    /// `(prefix_len, last_node, mamba_exist, free_kv_runs,
+    /// free_kv_start_pos, free_mamba)` where `free_kv_runs[i]` is freed
+    /// via `free_segment(run, start_pos=free_kv_start_pos[i])`.
+    fn insert(
+        &mut self,
+        py: Python<'_>,
+        keys: Vec<i64>,
+        values: Vec<i64>,
+        mamba_values: Vec<i64>,
+        prev_prefix_len: u32,
+    ) -> PyResult<(
+        u32,
+        u32,
+        bool,
+        Vec<Vec<i64>>,
+        Vec<u32>,
+        Vec<Vec<i64>>,
+    )> {
+        let r = py.detach(|| {
+            let key = RadixKey::new(&keys);
+            self.tree.insert(
+                &key,
+                &values,
+                &mamba_values,
+                prev_prefix_len as usize,
+            )
+        });
+        let (kv_runs, kv_start_pos) = r
+            .free
+            .kv
+            .into_iter()
+            .map(|(run, pos)| (run, u32::try_from(pos).unwrap_or(u32::MAX)))
+            .unzip();
+        Ok((
+            u32::try_from(r.prefix_len).unwrap_or(u32::MAX),
+            r.last_node,
+            r.mamba_exist,
+            kv_runs,
+            kv_start_pos,
+            r.free.mamba,
+        ))
+    }
+
+    /// `evict(full_tokens, mamba_num)` →
+    /// `(full_evicted, mamba_evicted, free_kv_runs, free_kv_start_pos,
+    /// free_mamba)`.
+    fn evict(
+        &mut self,
+        py: Python<'_>,
+        full_tokens: u32,
+        mamba_num: u32,
+    ) -> PyResult<(u32, u32, Vec<Vec<i64>>, Vec<u32>, Vec<Vec<i64>>)> {
+        let r = py.detach(|| self.tree.evict(full_tokens as usize, mamba_num as usize));
+        let (kv_runs, kv_start_pos) = r
+            .free
+            .kv
+            .into_iter()
+            .map(|(run, pos)| (run, u32::try_from(pos).unwrap_or(u32::MAX)))
+            .unzip();
+        Ok((
+            u32::try_from(r.full_num_evicted).unwrap_or(u32::MAX),
+            u32::try_from(r.mamba_num_evicted).unwrap_or(u32::MAX),
+            kv_runs,
+            kv_start_pos,
+            r.free.mamba,
+        ))
+    }
+
+    /// `inc_lock_ref(node)` → `(full_delta, mamba_delta)` (units moved
+    /// evictable -> protected, <= 0).
+    fn inc_lock_ref(&mut self, node: u32) -> (i64, i64) {
+        self.tree.inc_lock_ref(node)
+    }
+
+    /// `dec_lock_ref(node)` → `(full_delta, mamba_delta)` (>= 0).
+    fn dec_lock_ref(&mut self, node: u32) -> (i64, i64) {
+        self.tree.dec_lock_ref(node)
+    }
+
+    fn full_evictable_size(&self) -> i64 {
+        self.tree.full_evictable_size()
+    }
+
+    fn mamba_evictable_size(&self) -> i64 {
+        self.tree.mamba_evictable_size()
+    }
+
+    fn full_protected_size(&self) -> i64 {
+        self.tree.full_protected_size()
+    }
+
+    fn mamba_protected_size(&self) -> i64 {
+        self.tree.mamba_protected_size()
+    }
+
+    /// `total_size()` → `(full, mamba)`.
+    fn total_size(&self) -> (i64, i64) {
+        self.tree.total_size()
+    }
+
+    fn node_children(&self, node: u32) -> Vec<u32> {
+        self.tree.node_children(node)
+    }
+
+    fn node_mamba_tombstone(&self, node: u32) -> bool {
+        self.tree.node_mamba_tombstone(node)
+    }
+
+    fn node_mamba_value(&self, node: u32) -> Option<Vec<i64>> {
+        self.tree.node_mamba_value(node)
+    }
+
+    fn node_full_lock_ref(&self, node: u32) -> u32 {
+        self.tree.node_full_lock_ref(node)
+    }
+
+    fn node_mamba_lock_ref(&self, node: u32) -> u32 {
+        self.tree.node_mamba_lock_ref(node)
+    }
+}
+
 // ------------------------------------------------------------ scheduler core
 
 /// Persistent scheduler core: owns the queues, the radix tree and the NTR
@@ -887,6 +1051,7 @@ fn _scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SchedulerCore>()?;
     m.add_class::<RadixTree>()?;
     m.add_class::<SWARadixTree>()?;
+    m.add_class::<MambaRadixTree>()?;
     m.add_function(wrap_pyfunction!(plan_next_batch_py, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_next_after_decay, m)?)?;
     m.add_function(wrap_pyfunction!(ntr_estimate_after_retract, m)?)?;
