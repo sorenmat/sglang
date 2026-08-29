@@ -1,0 +1,224 @@
+"""CPU-only unit tests for --enable-adaptive-prefill scheduling policy.
+
+Pins the decode-pressure policy: running decode requests get a latency
+budget; prefill chunks shrink so their projected cost (from a measured
+prefill-throughput EWMA) fits in the remaining budget, and once the budget
+is exceeded the scheduler yields the iteration to decode. Targets agent
+traffic (bursty tool-return prefills alongside steady decoding) where
+prefill-first scheduling otherwise starves decode.
+"""
+
+import unittest
+from types import SimpleNamespace
+
+from sglang.srt.managers.scheduler import Scheduler
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.test.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=2, suite="base-a-test-cpu")
+
+
+def _scheduler(
+    *,
+    enabled=True,
+    budget_ms=50.0,
+    min_chunk=2048,
+    base_chunk=8192,
+    tps=None,
+    page_size=1,
+):
+    s = object.__new__(Scheduler)
+    s.enable_adaptive_prefill = enabled
+    s.decode_latency_budget_s = budget_ms / 1000.0
+    s.adaptive_prefill_min_chunk_tokens = min_chunk
+    s.chunked_prefill_size = base_chunk
+    s.page_size = page_size
+    s._prefill_dispatch_probe = None
+    s._prefill_tps_ewma = tps
+    s._last_adaptive_yield_log_t = 0.0
+    s._last_decode_dispatch_t = 0.0
+    return s
+
+
+def _running_batch(n=4):
+    return SimpleNamespace(
+        is_empty=lambda: n == 0,
+        is_prefill_only=False,
+        batch_size=lambda: n,
+    )
+
+
+def _batch(mode, extend_lens=None):
+    return SimpleNamespace(forward_mode=mode, extend_lens=extend_lens or [])
+
+
+class TestAdaptiveChunkBudget(unittest.TestCase):
+    def test_disabled_is_uncapped(self):
+        s = _scheduler(enabled=False)
+        self.assertEqual(s._adaptive_prefill_chunk_budget(_running_batch()), -1)
+        self.assertIsNone(s._adaptive_chunk_size(_running_batch()))
+
+    def test_no_decode_pressure_is_uncapped(self):
+        s = _scheduler(tps=1000.0)
+        empty = SimpleNamespace(
+            is_empty=lambda: True, is_prefill_only=False, batch_size=lambda: 0
+        )
+        self.assertEqual(s._adaptive_prefill_chunk_budget(empty), -1)
+        self.assertIsNone(s._adaptive_chunk_size(empty))
+
+    def test_no_throughput_estimate_keeps_base_chunk(self):
+        """Before the EWMA sees its first prefill sample, keep the configured
+        chunk (the estimate needs at least one chunk to bootstrap)."""
+        import time
+
+        s = _scheduler(tps=None)
+        s._last_decode_dispatch_t = time.monotonic()  # wait ~0 < budget
+        self.assertEqual(s._adaptive_prefill_chunk_budget(_running_batch()), -1)
+        self.assertIsNone(s._adaptive_chunk_size(_running_batch()))
+
+    def test_chunk_fits_remaining_budget(self):
+        """Chunk = measured tokens/sec * remaining budget, clamped to base."""
+        import time
+
+        s = _scheduler(tps=1000.0, budget_ms=100.0, base_chunk=8192)
+        s._last_decode_dispatch_t = time.monotonic() - 0.075  # 75 ms waited
+        # 25 ms remain -> 1000 tok/s * 0.025 s = 25 tokens... floored to min
+        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 2048)
+
+        s2 = _scheduler(tps=100_000.0, budget_ms=100.0, base_chunk=8192)
+        s2._last_decode_dispatch_t = time.monotonic() - 0.075
+        # 25 ms remain -> ~2500 tokens, below the 8192 base
+        self.assertAlmostEqual(
+            s2._adaptive_chunk_size(_running_batch()), 2500, delta=2
+        )
+
+        s3 = _scheduler(tps=10_000_000.0, budget_ms=100.0, base_chunk=8192)
+        s3._last_decode_dispatch_t = time.monotonic() - 0.075
+        # remaining budget allows more than the base chunk: stay at base
+        self.assertEqual(s3._adaptive_chunk_size(_running_batch()), 8192)
+
+    def test_over_budget_yields(self):
+        import time
+
+        s = _scheduler(tps=1000.0, budget_ms=50.0)
+        s._last_decode_dispatch_t = time.monotonic() - 0.5  # 500 ms waited
+        self.assertEqual(s._adaptive_prefill_chunk_budget(_running_batch()), 0)
+
+    def test_floor_respects_page_size(self):
+        import time
+
+        s = _scheduler(tps=1.0, budget_ms=100.0, min_chunk=64, page_size=256)
+        s._last_decode_dispatch_t = time.monotonic() - 0.075
+        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 256)
+
+
+class TestAdaptiveSignals(unittest.TestCase):
+    def test_ewma_first_sample_then_blend(self):
+        import time
+
+        s = _scheduler(tps=None)
+        now = time.monotonic()
+        s._prefill_dispatch_probe = (now - 1.0, 8192)  # ~8192 tok/s
+        s._update_adaptive_prefill_signals()
+        self.assertAlmostEqual(s._prefill_tps_ewma, 8192, delta=16)
+        s._prefill_dispatch_probe = (now - 1.0, 4096)
+        s._update_adaptive_prefill_signals()
+        self.assertAlmostEqual(s._prefill_tps_ewma, 0.3 * 4096 + 0.7 * 8192, delta=16)
+
+    def test_probe_cleared_and_zero_tokens_ignored(self):
+        import time
+
+        s = _scheduler(tps=None)
+        now = time.monotonic()
+        s._prefill_dispatch_probe = (now, 0)
+        s._update_adaptive_prefill_signals()
+        self.assertIsNone(s._prefill_tps_ewma)
+        self.assertIsNone(s._prefill_dispatch_probe)
+
+    def test_dispatch_stamp_modes(self):
+        import time
+
+        s = _scheduler()
+        s._last_decode_dispatch_t = 0.0
+
+        s._stamp_adaptive_prefill_dispatch(_batch(ForwardMode.DECODE))
+        decode_t = s._last_decode_dispatch_t
+        self.assertGreater(decode_t, 0)
+        self.assertIsNone(s._prefill_dispatch_probe)
+
+        # TARGET_VERIFY (spec decode's decode step) also stamps decode.
+        s._stamp_adaptive_prefill_dispatch(_batch(ForwardMode.TARGET_VERIFY))
+        self.assertGreaterEqual(s._last_decode_dispatch_t, decode_t)
+
+        # EXTEND stamps the token probe.
+        s._prefill_dispatch_probe = None
+        s._stamp_adaptive_prefill_dispatch(
+            _batch(ForwardMode.EXTEND, extend_lens=[1000, 233])
+        )
+        self.assertEqual(s._prefill_dispatch_probe[1], 1233)
+
+        # MIXED does both.
+        s._prefill_dispatch_probe = None
+        t0 = s._last_decode_dispatch_t
+        s._stamp_adaptive_prefill_dispatch(
+            _batch(ForwardMode.MIXED, extend_lens=[512, 1, 1])
+        )
+        self.assertEqual(s._prefill_dispatch_probe[1], 514)
+        self.assertGreaterEqual(s._last_decode_dispatch_t, t0)
+
+        # None and disabled are no-ops.
+        before = s._prefill_dispatch_probe
+        s._stamp_adaptive_prefill_dispatch(None)
+        self.assertEqual(s._prefill_dispatch_probe, before)
+        s2 = _scheduler(enabled=False)
+        s2._stamp_adaptive_prefill_dispatch(_batch(ForwardMode.DECODE))
+        self.assertEqual(s2._last_decode_dispatch_t, 0.0)
+
+
+class TestInitGating(unittest.TestCase):
+    def _publish(self, **fields):
+        from sglang.srt import runtime_context as rc
+
+        return rc.get_context().override_server_args(**fields)
+
+    def _init(self, *, chunked_prefill_size=8192, dynamic_chunking=False):
+        s = object.__new__(Scheduler)
+        s.chunked_prefill_size = chunked_prefill_size
+        s.enable_dynamic_chunking = dynamic_chunking
+        s._init_adaptive_prefill()
+        return s
+
+    def test_enabled_by_default_path(self):
+        with self._publish(
+            enable_adaptive_prefill=True,
+            decode_latency_budget_ms=40.0,
+            adaptive_prefill_min_chunk_tokens=2048,
+        ):
+            s = self._init()
+            self.assertTrue(s.enable_adaptive_prefill)
+            self.assertAlmostEqual(s.decode_latency_budget_s, 0.04)
+            self.assertEqual(s.adaptive_prefill_min_chunk_tokens, 2048)
+
+    def test_disabled_without_chunked_prefill(self):
+        with self._publish(enable_adaptive_prefill=True):
+            s = self._init(chunked_prefill_size=None)
+            self.assertFalse(s.enable_adaptive_prefill)
+
+    def test_disabled_under_dp_attention(self):
+        with self._publish(enable_adaptive_prefill=True, enable_dp_attention=True):
+            s = self._init()
+            self.assertFalse(s.enable_adaptive_prefill)
+
+    def test_disabled_under_pp_dynamic_chunking(self):
+        with self._publish(enable_adaptive_prefill=True):
+            s = self._init(dynamic_chunking=True)
+            self.assertFalse(s.enable_adaptive_prefill)
+
+    def test_off_by_default(self):
+        with self._publish():
+            s = self._init()
+            self.assertFalse(s.enable_adaptive_prefill)
+
+
+if __name__ == "__main__":
+    unittest.main()

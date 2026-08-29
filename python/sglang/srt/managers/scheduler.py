@@ -278,7 +278,7 @@ from sglang.srt.mem_cache.common import (
     release_kv_cache,
     retraction_discard,
 )
-from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
+from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.model_loader.utils import get_resolved_model_impl
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
 from sglang.srt.observability.metrics_collector import SchedulerMetricsCollector
@@ -408,6 +408,16 @@ class Scheduler(
     # Class-level default so on_idle's stall gate works even if a fork
     # overrides init_load_publisher (which would otherwise not set it).
     _last_stall_publish_ts: float = float("-inf")
+
+    # Adaptive prefill scheduling state (properly initialized in
+    # init_chunked_prefill; class defaults keep duck-typed / partially
+    # initialized instances safe in get_next_batch_to_run).
+    enable_adaptive_prefill: bool = False
+    _prefill_dispatch_probe: Optional[tuple] = None
+    _prefill_tps_ewma: Optional[float] = None
+    _last_decode_dispatch_t: float = 0.0
+    decode_latency_budget_s: float = 0.05
+    adaptive_prefill_min_chunk_tokens: int = 2048
 
     def __init__(
         self,
@@ -1239,12 +1249,157 @@ class Scheduler(
                 )
                 self.enable_dynamic_chunking = False
 
+        self._init_adaptive_prefill()
+
+    def _init_adaptive_prefill(self):
+        """Decode-pressure-aware chunked prefill (see --enable-adaptive-prefill).
+
+        Two signals drive it: the wall time since the last decode-carrying
+        batch was dispatched, and an EWMA of observed prefill throughput
+        (tokens/sec, measured dispatch-to-next-scheduling-pass, which is the
+        cadence decode requests actually experience).
+        """
+        self._last_decode_dispatch_t = time.monotonic()
+        self._prefill_dispatch_probe = None  # (dispatch_t, extend token count)
+        self._prefill_tps_ewma = None
+        self._last_adaptive_yield_log_t = 0.0
+
+        enable = get_schedule().enable_adaptive_prefill
+        if not enable:
+            self.enable_adaptive_prefill = False
+            return
+        if self.chunked_prefill_size is None:
+            logger.warning(
+                "--enable-adaptive-prefill requires chunked prefill; ignoring "
+                "it with chunked prefill disabled."
+            )
+            self.enable_adaptive_prefill = False
+            return
+        if require_mlp_sync():
+            # The yield/chunk decisions must be identical across DP ranks, but
+            # per-rank decode wait times are not synchronized.
+            logger.warning(
+                "--enable-adaptive-prefill is not supported with DP attention "
+                "/ gathered-buffer sync; disabling it."
+            )
+            self.enable_adaptive_prefill = False
+            return
+        if self.enable_dynamic_chunking:
+            # PP dynamic chunking already owns chunk sizing.
+            logger.info(
+                "--enable-adaptive-prefill is disabled because PP dynamic "
+                "chunking owns chunk sizing."
+            )
+            self.enable_adaptive_prefill = False
+            return
+        self.enable_adaptive_prefill = True
+        self.decode_latency_budget_s = (
+            get_schedule().decode_latency_budget_ms / 1000.0
+        )
+        self.adaptive_prefill_min_chunk_tokens = max(
+            1, get_schedule().adaptive_prefill_min_chunk_tokens
+        )
+        logger.info(
+            "Adaptive prefill scheduling enabled: decode latency budget %.1f ms, "
+            "min chunk %d tokens, base chunk %d tokens.",
+            get_schedule().decode_latency_budget_ms,
+            self.adaptive_prefill_min_chunk_tokens,
+            self.chunked_prefill_size,
+        )
+
+    def _update_adaptive_prefill_signals(self):
+        """Fold the previous prefill dispatch into the throughput EWMA."""
+        probe = self._prefill_dispatch_probe
+        if probe is None:
+            return
+        self._prefill_dispatch_probe = None
+        dispatch_t, tokens = probe
+        elapsed = time.monotonic() - dispatch_t
+        if tokens > 0 and elapsed > 1e-3:
+            sample = tokens / elapsed
+            ewma = self._prefill_tps_ewma
+            self._prefill_tps_ewma = (
+                sample if ewma is None else 0.3 * sample + 0.7 * ewma
+            )
+
+    def _adaptive_prefill_chunk_budget(self, running_batch: ScheduleBatch) -> int:
+        """Token budget for the next prefill chunk that keeps running decode
+        requests inside the latency budget:
+
+        - no decode to protect -> no cap (base chunk);
+        - already over budget -> 0 (yield the iteration to decode);
+        - no throughput estimate yet -> no cap while learning;
+        - otherwise -> remaining budget * measured prefill tokens/sec.
+        """
+        if not self.enable_adaptive_prefill:
+            return -1
+        if running_batch.is_empty() or running_batch.is_prefill_only:
+            return -1
+        wait_s = time.monotonic() - self._last_decode_dispatch_t
+        if wait_s >= self.decode_latency_budget_s:
+            now = time.monotonic()
+            if now - self._last_adaptive_yield_log_t > 30.0:
+                self._last_adaptive_yield_log_t = now
+                logger.debug(
+                    "Adaptive prefill: decode wait %.1f ms exceeds budget "
+                    "%.1f ms; yielding iteration to decode (running bs=%d).",
+                    wait_s * 1e3,
+                    self.decode_latency_budget_s * 1e3,
+                    running_batch.batch_size(),
+                )
+            return 0
+        if self._prefill_tps_ewma is None:
+            return -1
+        return int(self._prefill_tps_ewma * (self.decode_latency_budget_s - wait_s))
+
+    def _adaptive_chunk_size(self, running_batch: ScheduleBatch) -> Optional[int]:
+        """The chunked-prefill budget after adaptive shrinking, or None to keep
+        the configured chunk. Never shrinks below
+        --adaptive-prefill-min-chunk-tokens: a chunk must make progress, and
+        the yield rule handles the over-budget case instead."""
+        budget = self._adaptive_prefill_chunk_budget(running_batch)
+        if budget < 0:
+            return None
+        # Never shrink below the floor or below one page (a chunk must make
+        # progress; the yield rule handles the over-budget case instead).
+        return max(
+            min(self.chunked_prefill_size, budget),
+            self.adaptive_prefill_min_chunk_tokens,
+            self.page_size or 1,
+        )
+
     def _should_defer_prefill(self) -> bool:
         if self._prefill_decode_interval_remaining == 0:
             return False
 
         self._prefill_decode_interval_remaining -= 1
         return True
+
+    def _stamp_adaptive_prefill_dispatch(self, batch: Optional[ScheduleBatch]):
+        """Record the signals adaptive prefill schedules on: when the last
+        decode-carrying batch went out (the decode-wait clock), and for extend
+        batches the token probe that feeds the prefill-throughput EWMA.
+
+        Under speculative decoding the decode step runs as TARGET_VERIFY, so
+        it counts as decode-carrying. Mixed chunks do both."""
+        if batch is None or not self.enable_adaptive_prefill:
+            return
+        mode = batch.forward_mode
+        if mode.is_mixed():
+            # Mixed chunks both advance decode and carry the chunk's tokens.
+            self._last_decode_dispatch_t = time.monotonic()
+            self._prefill_dispatch_probe = (
+                time.monotonic(),
+                int(sum(batch.extend_lens)),
+            )
+        elif mode.is_decode() or mode.is_target_verify():
+            self._last_decode_dispatch_t = time.monotonic()
+        elif mode.is_extend():
+            # is_extend() covers MIXED/TARGET_VERIFY, both handled above.
+            self._prefill_dispatch_probe = (
+                time.monotonic(),
+                int(sum(batch.extend_lens)),
+            )
 
     def _arm_prefill_decode_interval(self, batch: Optional[ScheduleBatch]) -> None:
         if self.prefill_decode_interval == 0 or batch is None:
@@ -3195,6 +3350,7 @@ class Scheduler(
         self, running_batch: ScheduleBatch, last_batch: Optional[ScheduleBatch]
     ) -> NextBatchPlan:
         self.process_pending_chunked_abort()
+        self._update_adaptive_prefill_signals()
 
         if self.enable_fpm:
             self._fpm_batch_t0 = time.monotonic()
@@ -3282,7 +3438,12 @@ class Scheduler(
 
         if self.dllm_config is not None:
             new_batch = self.get_new_batch_dllm(running_batch)
-        elif self._should_defer_prefill():
+        elif self._should_defer_prefill() or (
+            # Adaptive policy: running decode requests already waited past the
+            # latency budget -> run decode this iteration instead of prefill.
+            self.enable_adaptive_prefill
+            and self._adaptive_prefill_chunk_budget(running_batch) == 0
+        ):
             new_batch = None
         else:
             prefill_plan = self.get_new_batch_prefill(running_batch)
@@ -3332,6 +3493,8 @@ class Scheduler(
         ret = self.ngram_embedding_manager.prepare_for_forward(
             ret, chunked_req=self.chunked_req
         )
+
+        self._stamp_adaptive_prefill_dispatch(ret)
 
         if ret:
             set_schedule_time_batch(ret)
@@ -3455,6 +3618,13 @@ class Scheduler(
             dynamic_size = self.predict_next_chunk_size(history_len)
             if dynamic_size is not None:
                 chunked_prefill_size = dynamic_size
+        elif self.enable_adaptive_prefill:
+            # Shrink the chunk so its projected cost keeps running decode
+            # requests inside the latency budget (no-op without decode
+            # pressure or before the throughput EWMA has a sample).
+            adaptive_size = self._adaptive_chunk_size(running_batch)
+            if adaptive_size is not None:
+                chunked_prefill_size = adaptive_size
 
         # Prefill policy
         # Get BLOCK_M from the backend for tile-budget admission logic
