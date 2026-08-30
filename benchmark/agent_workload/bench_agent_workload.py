@@ -25,6 +25,7 @@ server between runs and prints a comparison table at the end.
 """
 
 import argparse
+import functools
 import json
 import os
 import shutil
@@ -339,6 +340,7 @@ def run_serve_cell(base, conc, input_len, args) -> dict:
                     "max_tokens": args.output_len,
                     "temperature": 0,
                     "stream": True,
+                    "ignore_eos": True,
                 },
                 stream=True,
                 timeout=args.request_timeout_s,
@@ -393,6 +395,9 @@ def count_retractions(log_path: str) -> int:
             )
     except OSError:
         return 0
+
+
+print = functools.partial(print, flush=True)
 
 
 def main():
