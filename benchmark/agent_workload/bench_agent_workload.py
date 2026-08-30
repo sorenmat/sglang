@@ -28,6 +28,7 @@ import argparse
 import functools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -218,14 +219,48 @@ def server_cmd(args, run_name: str) -> list:
     return cmd
 
 
+def target_weight_gb(log_path: str) -> float:
+    """First 'Load weight end ... mem usage=X GB' (the target model; the
+    MTP draft is the second). NVFP4 27B lands ~20 GB; ~60-82 GB means the
+    loader silently fell back to dequantized bf16 -- memory-fatal for pool
+    sizing, so callers must detect and relaunch."""
+    try:
+        with open(log_path, errors="ignore") as f:
+            for line in f:
+                m = re.search(r"Load weight end.*mem usage=([0-9.]+) GB", line)
+                if m:
+                    return float(m.group(1))
+    except OSError:
+        pass
+    return -1.0
+
+
 def launch_server(args, run_name: str, log_path: str):
+    for attempt in range(3):
+        proc, base, weight_gb = _launch_once(args, run_name, log_path)
+        if weight_gb < 0 or weight_gb <= 40.0:
+            return proc, base
+        # silent NVFP4->bf16 weight fallback (transient fp4 JIT failure):
+        # tear down and relaunch rather than bench a 4x-memory image
+        print(
+            f"[{run_name}] weight load used {weight_gb:.1f} GB (bf16 fallback, "
+            f"expected ~20); retrying launch (attempt {attempt + 2}/3)"
+        )
+        teardown_server(proc)
+        wait_gpu_free()
+    raise RuntimeError(
+        f"[{run_name}] weight load kept falling back to bf16; see {log_path}"
+    )
+
+
+def _launch_once(args, run_name: str, log_path: str):
     env = dict(os.environ)
     env["SGLANG_NVFP4_DQ_MIRROR_FRACTION"] = (
         str(args.nvfp4_mirror_fraction) if run_name.endswith("+mirror") else "0.0"
     )
     cmd = server_cmd(args, run_name.replace("+mirror", ""))
     print(f"[launch] {' '.join(cmd[:8])} ... (log: {log_path})")
-    log = open(log_path, "w")
+    log = open(log_path, "a")
     proc = subprocess.Popen(
         cmd, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True
     )
@@ -236,11 +271,23 @@ def launch_server(args, run_name: str, log_path: str):
             raise RuntimeError(f"server exited early; see {log_path}")
         try:
             with urllib.request.urlopen(base + "/health_generate", timeout=5):
-                return proc, base
+                return proc, base, target_weight_gb(log_path)
         except Exception:
             time.sleep(3)
     proc.terminate()
     raise RuntimeError(f"server did not become healthy in {args.launch_timeout_s}s")
+
+
+def teardown_server(proc) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    wait_gpu_free()
 
 
 def server_derived_config(base: str) -> dict:
@@ -490,14 +537,7 @@ def main():
                         + ("  ** FAIL (retraction>0) **" if retractions > 0 else "")
                     )
         finally:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            try:
-                proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            # make sure CUDA memory is really released before the next launch
-            if not wait_gpu_free():
-                print(f"[{run_name}] WARNING: GPU memory did not free after teardown")
+            teardown_server(proc)
 
     # Comparison table: per (c, ctx), relative throughput of each run vs the
     # first run.
