@@ -771,6 +771,33 @@ class ServerArgs:
         "shrinking further.",
         NS("schedule"),
     ] = 2048
+    mamba_auto_target_concurrency: A[
+        Optional[int],
+        "With --mamba-full-memory-ratio auto: the concurrency the state pool "
+        "is sized for. Defaults to --max-running-requests (or a context-length "
+        "solve when unset). Set this to the OBSERVED typical concurrency, not "
+        "the fleet cap: agent deployments running a handful of long-context "
+        "requests should size for that handful and give the rest of the budget "
+        "to the KV/radix pool.",
+        NS("schedule"),
+    ] = None
+    mamba_auto_kv_floor_contexts: A[
+        int,
+        "With --mamba-full-memory-ratio auto: minimum number of whole "
+        "contexts the KV pool must still hold after state allocation. The "
+        "state pool shrinks (and concurrency with it) rather than violate "
+        "this floor -- a guard against KV starvation on long-context "
+        "deployments where the radix cache is the load-bearing wall.",
+        NS("schedule"),
+    ] = 8
+    mamba_auto_kv_floor_context_tokens: A[
+        Optional[int],
+        "With --mamba-full-memory-ratio auto: per-context length used for the "
+        "KV floor (--mamba-auto-kv-floor-contexts). Defaults to the model "
+        "context length capped at 131072. Set it to the real deployment "
+        "context (e.g. 106000 for 90-120k agent prompts).",
+        NS("schedule"),
+    ] = None
     max_prefill_tokens: A[
         int,
         Arg(

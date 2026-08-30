@@ -1900,12 +1900,18 @@ class KVCacheConfigurator:
 
     def _kv_cell_size_bytes(self) -> int:
         """Bytes/token of the target-side KV pool (incl. draft KV surcharges),
-        used by 'auto' sizing to balance state vs KV for a target context."""
+        used by 'auto' sizing to balance state vs KV for a target context.
+        Returns 0 when the configurator cannot be built (duck-typed callers,
+        exotic architectures) -- 'auto' then runs without a KV floor."""
         from sglang.srt.model_executor.pool_configurator import (
             create_memory_pool_configurator,
         )
 
-        return int(getattr(create_memory_pool_configurator(self), "_cell_size", 0) or 0)
+        try:
+            configurator = create_memory_pool_configurator(self)
+        except Exception:  # noqa: BLE001
+            return 0
+        return int(getattr(configurator, "_cell_size", 0) or 0)
 
     def _auto_mamba_pool_size(
         self,
@@ -1922,9 +1928,15 @@ class KVCacheConfigurator:
         A fixed ratio strands memory on one side or the other: an undersized
         state pool silently caps effective concurrency (each running request
         holds several state slots, more under speculative decoding), an
-        oversized one starves KV. The target concurrency is
-        --max-running-requests when set; otherwise as many full-context
-        requests as the combined per-request footprint allows.
+        oversized one starves KV. The target concurrency resolution order:
+        --mamba-auto-target-concurrency (the observed typical concurrency),
+        then --max-running-requests (the fleet cap -- usually far above the
+        real load for agent deployments), then a context-length solve.
+
+        A KV floor (--mamba-auto-kv-floor-contexts whole contexts) bounds the
+        state pool from above: long-context deployments where the radix cache
+        carries most of the prompt must not trade KV away for state slots
+        they will never use.
 
         Returns (max_mamba_cache_size, intermediate_bytes): the persistent
         state-slot count K and the spec-decode intermediate-state bytes the
@@ -1934,6 +1946,9 @@ class KVCacheConfigurator:
         total_bytes = int(total_rest_memory * (1 << 30))
         per_slot = stage_per_req + replayssm_ring_per_req
         slots_per_req = self._calculate_mamba_ratio()
+        # Under ReplaySSM-spec there is no per-draft intermediate_ssm scratch
+        # (the ring rides on every slot via replayssm_ring_per_req instead);
+        # otherwise each running request holds D intermediate states.
         draft_tokens = (
             get_spec().speculative_num_draft_tokens
             if (has_spec_dec and not replayssm_active)
@@ -1942,11 +1957,18 @@ class KVCacheConfigurator:
         if draft_tokens is None:
             draft_tokens = 0
 
+        cell_size = self._kv_cell_size_bytes()
+        target_source = "context-length solve"
         target_reqs = None
-        if get_schedule().max_running_requests is not None:
+        if get_schedule().mamba_auto_target_concurrency is not None:
+            target_reqs = get_schedule().mamba_auto_target_concurrency // max(
+                self.ps.attn_dp_size, 1
+            )
+            target_source = "--mamba-auto-target-concurrency"
+        elif get_schedule().max_running_requests is not None:
             target_reqs = get_schedule().max_running_requests // self.ps.attn_dp_size
+            target_source = "--max-running-requests (fleet cap; prefer --mamba-auto-target-concurrency set to the observed concurrency)"
         else:
-            cell_size = self._kv_cell_size_bytes()
             context_len = max(int(self.model_config.context_len), 1)
             per_request_total = (
                 slots_per_req * per_slot
@@ -1958,11 +1980,37 @@ class KVCacheConfigurator:
         if target_reqs is None or target_reqs < 1:
             target_reqs = 1
 
+        # KV floor: the state pool may not push the KV cache below this many
+        # whole contexts. The floor's per-context length defaults to the
+        # model context capped at 128k.
+        floor_contexts = max(
+            int(get_schedule().mamba_auto_kv_floor_contexts or 0), 0
+        )
+        floor_tokens = get_schedule().mamba_auto_kv_floor_context_tokens
+        if floor_tokens is None:
+            floor_tokens = min(int(self.model_config.context_len), 131072)
+        kv_floor_bytes = floor_contexts * int(floor_tokens) * cell_size
+        floor_unachievable = kv_floor_bytes >= total_bytes
+        if floor_unachievable:
+            logger.warning(
+                "mamba-full-memory-ratio auto: KV floor of %d x %d tokens "
+                "(%.2f GB) is not achievable in %.2f GB rest memory; the "
+                "state pool is reduced to the bare minimum instead.",
+                floor_contexts,
+                floor_tokens,
+                kv_floor_bytes / (1 << 30),
+                total_bytes / (1 << 30),
+            )
+            kv_floor_bytes = max(int(total_bytes * 0.75), 0)
+
         # Exact integer sizing (the generic ratio path's float joint solve
         # floors a slot below the intended concurrency). Same accounting:
         # (K + 1) persistent slots plus (capped_reqs + 1) intermediate states.
         k = target_reqs * slots_per_req
-        budget = int(total_bytes * AUTO_MAMBA_MAX_REST_SHARE)
+        budget = min(
+            int(total_bytes * AUTO_MAMBA_MAX_REST_SHARE),
+            max(total_bytes - kv_floor_bytes, 0),
+        )
         max_affordable_k = (
             budget - per_slot - (target_reqs + 1) * draft_tokens * stage_per_req
         ) // per_slot
@@ -1978,24 +2026,48 @@ class KVCacheConfigurator:
             "mamba_full_memory_ratio_auto",
             mamba_full_memory_ratio=round(effective_ratio, 4),
         )
+        concurrency_cap = k // slots_per_req if slots_per_req else 0
+        cap_note = ""
+        if (
+            get_schedule().max_running_requests is not None
+            and concurrency_cap
+            < get_schedule().max_running_requests // self.ps.attn_dp_size
+        ):
+            cap_note = (
+                f" Effective concurrency is capped at {concurrency_cap} by the "
+                "state pool (below --max-running-requests); raise "
+                "--mamba-auto-target-concurrency if that is too low."
+            )
         logger.info(
-            "mamba-full-memory-ratio auto: target concurrency=%d reqs, %d state "
-            "slots/req (spec draft tokens=%d) -> %d state slots + %.2f GB "
+            "mamba-full-memory-ratio auto: target concurrency=%d reqs (%s), "
+            "%d state slots/req, replaySSM ring=%s, spec draft tokens=%d "
+            "(intermediate states %s) -> %d state slots + %.2f GB "
             "intermediates (%.2f GB of %.2f GB rest, effective ratio %.3f); "
-            "KV cache gets the remaining %.2f GB.%s",
+            "KV cache gets the remaining %.2f GB (floor: %d x %d tokens = "
+            "%.2f GB).%s%s",
             target_reqs,
+            target_source,
             slots_per_req,
+            (
+                f"{replayssm_ring_per_req / (1 << 20):.1f} MB/req"
+                if replayssm_active and replayssm_ring_per_req
+                else "off"
+            ),
             draft_tokens,
+            "charged above" if draft_tokens else "none (ReplaySSM carries them in the ring)",
             k,
             intermediate_bytes / (1 << 30),
             mamba_bytes / (1 << 30),
             total_bytes / (1 << 30),
             effective_ratio,
             (total_bytes - mamba_bytes) / (1 << 30),
+            floor_contexts,
+            floor_tokens,
+            kv_floor_bytes / (1 << 30),
             ""
             if not capped
-            else " Target concurrency exceeds the state-memory share; effective "
-            "concurrency will be capped (see the mamba cap warning).",
+            else " Target concurrency exceeds the state-memory share.",
+            cap_note,
         )
         return k, intermediate_bytes
 

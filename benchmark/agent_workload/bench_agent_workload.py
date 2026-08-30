@@ -156,7 +156,18 @@ def run_agent_session(
 # ---------------------------------------------------------------------------
 
 
+def parse_run_spec(run_name: str) -> tuple:
+    """A run is `name` or `name@--flag=v,--flag2=v2` (comma-separated extra
+    server args applied only for that run)."""
+    if "@" in run_name:
+        name, extra = run_name.split("@", 1)
+        extras = [a.strip() for a in extra.split(",") if a.strip()]
+        return name, extras
+    return run_name, []
+
+
 def server_cmd(args, run_name: str) -> list:
+    name, run_extra_args = parse_run_spec(run_name)
     cmd = [
         sys.executable,
         "-m",
@@ -191,17 +202,18 @@ def server_cmd(args, run_name: str) -> list:
         # only pass an explicit draft path when one was given.
         if args.draft_model:
             cmd += ["--speculative-draft-model-path", args.draft_model]
-    if run_name in ("auto", "auto+adaptive"):
+    if name in ("auto", "auto+adaptive"):
         cmd += ["--mamba-full-memory-ratio", "auto", "--max-running-requests", str(max(args.concurrencies))]
     elif args.mamba_ratio is not None:
         cmd += ["--mamba-full-memory-ratio", str(args.mamba_ratio)]
-    if run_name in ("adaptive", "auto+adaptive"):
+    if name in ("adaptive", "auto+adaptive"):
         cmd += [
             "--enable-adaptive-prefill",
             "--decode-latency-budget-ms",
             str(args.decode_latency_budget_ms),
         ]
     cmd += args.extra_server_args
+    cmd += run_extra_args
     return cmd
 
 
@@ -291,6 +303,98 @@ def run_sweep_cell(base, conc, ctx_tokens, args) -> dict:
     }
 
 
+def run_serve_cell(base, conc, input_len, args) -> dict:
+    """Closed-loop bench_serve-style cell: `conc` requests in flight at all
+    times until --num-prompts complete. Each prompt = one long shared prefix
+    (--shared-prefix-len, the prefix-cache reality of agent deployments) +
+    a random unique tail to --input-len. Streaming, so TTFT/ITL are real."""
+    import random as _random
+    import threading
+
+    import requests
+
+    rng = _random.Random(1234)
+    shared_prefix = build_context(args.shared_prefix_len, seed=99)
+    lock = threading.Lock()
+    remaining = [args.num_prompts]
+    ttfts, itls, out_tokens = [], [], []
+
+    def one_request():
+        while True:
+            with lock:
+                if remaining[0] <= 0:
+                    return
+                remaining[0] -= 1
+            tail = build_context(max(input_len - args.shared_prefix_len, 64), seed=rng.randrange(1 << 30))
+            prompt = shared_prefix + "\n" + tail + "\nSummarize the above in one sentence."
+            t0 = time.monotonic()
+            ttft = None
+            last = None
+            count = 0
+            resp = requests.post(
+                base + "/v1/completions",
+                json={
+                    "model": "default",
+                    "prompt": prompt,
+                    "max_tokens": args.output_len,
+                    "temperature": 0,
+                    "stream": True,
+                },
+                stream=True,
+                timeout=args.request_timeout_s,
+            )
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith(b"data: "):
+                    continue
+                payload = line[len(b"data: "):]
+                if payload == b"[DONE]":
+                    break
+                delta = json.loads(payload)["choices"][0]
+                now = time.monotonic()
+                text = (delta.get("text") or "").strip()
+                if text and ttft is None:
+                    ttft = now - t0
+                elif text and last is not None:
+                    itls.append(now - last)
+                if text:
+                    last = now
+                    count += 1
+            with lock:
+                if ttft is not None:
+                    ttfts.append(ttft)
+                out_tokens.append(max(count, 1))
+
+    t0 = time.monotonic()
+    with ThreadPoolExecutor(max_workers=conc) as pool:
+        list(pool.map(lambda _: one_request(), range(conc)))
+    wall = time.monotonic() - t0
+    return {
+        "concurrency": conc,
+        "context_tokens": input_len,
+        "wall_s": wall,
+        "output_tokens_per_s": sum(out_tokens) / wall,
+        "ttft_p50_s": percentile(ttfts, 0.5),
+        "ttft_p99_s": percentile(ttfts, 0.99),
+        "itl_mean_ms": 1000 * sum(itls) / max(len(itls), 1),
+        "itl_p50_ms": 1000 * percentile(itls, 0.5),
+        "itl_p99_ms": 1000 * percentile(itls, 0.99),
+        "itl_per_stream_p50_ms": 1000 * percentile(itls, 0.5),
+    }
+
+
+def count_retractions(log_path: str) -> int:
+    try:
+        with open(log_path, errors="ignore") as f:
+            return sum(
+                1
+                for line in f
+                if "etract" in line and "retraction_policy" not in line
+            )
+    except OSError:
+        return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -314,6 +418,15 @@ def main():
     parser.add_argument("--skip-cells", type=int, nargs="*", default=[],
                         help="ctx values to skip (e.g. contexts that exceed VRAM at high c)")
     parser.add_argument("--extra-server-args", nargs="*", default=[])
+    parser.add_argument("--mode", default="agent", choices=["agent", "serve"],
+                        help="agent: multi-turn sessions; serve: closed-loop bench_serve-"
+                             "style with a long shared prefix (deployment-realistic)")
+    parser.add_argument("--input-len", type=int, default=16384, help="serve mode: prompt length")
+    parser.add_argument("--output-len", type=int, default=1024, help="serve mode: generation length")
+    parser.add_argument("--shared-prefix-len", type=int, default=0,
+                        help="serve mode: tokens of shared prefix across all prompts "
+                             "(models the prefix-cache-hit reality of agent deployments)")
+    parser.add_argument("--num-prompts", type=int, default=64, help="serve mode: total requests")
     args = parser.parse_args()
 
     all_results = {}
@@ -323,12 +436,17 @@ def main():
         try:
             derived = server_derived_config(base)
             print(f"[{run_name}] server config: {derived}")
-            for ctx in args.contexts:
+            contexts = [args.input_len] if args.mode == "serve" else args.contexts
+            for ctx in contexts:
                 if ctx in args.skip_cells:
                     continue
                 for conc in args.concurrencies:
-                    cell = run_sweep_cell(base, conc, ctx, args)
-                    cell.update(run=run_name, **{
+                    if args.mode == "serve":
+                        cell = run_serve_cell(base, conc, ctx, args)
+                    else:
+                        cell = run_sweep_cell(base, conc, ctx, args)
+                    retractions = count_retractions(log_path)
+                    cell.update(run=run_name, retractions=retractions, **{
                         k: v for k, v in derived.items() if k != "error"
                     })
                     all_results[(run_name, conc, ctx)] = cell
@@ -336,7 +454,9 @@ def main():
                         f"[{run_name}] c={conc:2d} ctx={ctx:6d} "
                         f"out tok/s={cell['output_tokens_per_s']:8.1f} "
                         f"ttft_p99={cell['ttft_p99_s']:7.2f}s "
-                        f"itl_p99={cell['itl_p99_ms']:8.1f}ms"
+                        f"itl_p99={cell['itl_p99_ms']:8.1f}ms "
+                        f"retractions={retractions}"
+                        + ("  ** FAIL (retraction>0) **" if retractions > 0 else "")
                     )
         finally:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

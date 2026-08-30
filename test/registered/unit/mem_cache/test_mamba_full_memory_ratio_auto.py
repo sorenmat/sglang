@@ -228,6 +228,111 @@ class TestAutoSizing(unittest.TestCase):
                 self.assertAlmostEqual(value, round(expected, 4), places=3)
 
 
+
+class TestAutoDeploymentShape(unittest.TestCase):
+    """The production-reported failure mode: auto sized for the fleet cap
+    (64) instead of the observed concurrency (<5) and left the KV pool too
+    small for long-context agent prompts. Pins the fixes: explicit target
+    concurrency, and a KV floor that shrinks the state pool rather than
+    starving KV."""
+
+    def _ctx(self, **fields):
+        from sglang.srt import runtime_context as rc
+
+        return rc.get_context().override_server_args(**fields)
+
+    def _pool(self, *, cell_size, total_gb=54.0, per_req_mb=147, **publish):
+        from sglang.srt.environ import envs
+
+        kvc, _ = _fake_kvc(cell_size=cell_size)
+        with self._ctx(
+            disable_radix_cache=True,
+            mamba_full_memory_ratio="auto",
+            max_mamba_cache_size=None,
+            **publish,
+        ):
+            with envs.SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK.override(False):
+                with _patch_cell_size(cell_size):
+                    return kvc._auto_mamba_pool_size(
+                        total_rest_memory=total_gb,
+                        stage_per_req=per_req_mb * (1 << 20),
+                        replayssm_ring_per_req=3 * (1 << 20),
+                        has_spec_dec=False,
+                        replayssm_active=False,
+                    )
+
+    def test_explicit_target_overrides_fleet_cap(self):
+        """--mamba-auto-target-concurrency wins over --max-running-requests:
+        sizing for the observed concurrency, not the fleet cap."""
+        k, _ = self._pool(
+            cell_size=0,
+            max_running_requests=64,
+            mamba_auto_target_concurrency=8,
+        )
+        # disable_radix -> 1 slot/req: 8 slots, not 64
+        self.assertEqual(k, 8)
+
+    def test_kv_floor_shrinks_state_pool(self):
+        """The reported production case: 64-request target on ~54 GB rest
+        took 37.6 GB of state and left KV starving. With a floor of 8 whole
+        106k contexts the state pool shrinks to fit."""
+        cell = 32 * 1024  # 32 KB/token (16 full-attn layers, fp8)
+        floor_gb = 8 * 106000 * cell / (1 << 30)  # ~26.5 GB
+        k, _ = self._pool(
+            cell_size=cell,
+            total_gb=54.0,
+            max_running_requests=64,
+            mamba_auto_kv_floor_contexts=8,
+            mamba_auto_kv_floor_context_tokens=106000,
+        )
+        per_slot = (147 + 3) * (1 << 20)
+        mamba_gb = (k + 1) * per_slot / (1 << 30)
+        kv_gb = 54.0 - mamba_gb
+        self.assertGreaterEqual(kv_gb, floor_gb - 0.01)
+        # and the state pool is materially smaller than the 37.6 GB failure
+        self.assertLess(mamba_gb, 30.0)
+
+    def test_floor_default_uses_capped_model_context(self):
+        """Default floor tokens = min(context_len, 131072)."""
+        cell = 32 * 1024
+        floor_gb = 8 * 131072 * cell / (1 << 30)
+        k, _ = self._pool(
+            cell_size=cell,
+            total_gb=54.0,
+            max_running_requests=64,
+        )
+        per_slot = (147 + 3) * (1 << 20)
+        self.assertGreaterEqual(54.0 - (k + 1) * per_slot / (1 << 30), floor_gb - 0.01)
+
+    def test_unachievable_floor_falls_back(self):
+        """A floor larger than rest memory degrades to 75% instead of
+        leaving no room for state at all."""
+        k, _ = self._pool(
+            cell_size=32 * 1024,
+            total_gb=10.0,
+            max_running_requests=2,
+            mamba_auto_kv_floor_contexts=64,
+            mamba_auto_kv_floor_context_tokens=131072,
+        )
+        self.assertGreaterEqual(k, 1)
+
+    def test_small_target_gives_kv_the_rest(self):
+        """Agent shape: target 8 on 54 GB -> state ~4.7 GB, KV ~49 GB (far
+        above the 1.08-ratio equivalent of ~26 GB; auto only ever helps KV
+        when the target is honest)."""
+        cell = 32 * 1024
+        k, _ = self._pool(
+            cell_size=cell,
+            total_gb=54.0,
+            max_running_requests=64,
+            mamba_auto_target_concurrency=8,
+        )
+        per_slot = (147 + 3) * (1 << 20)
+        self.assertEqual(k, 8)
+        kv_gb = 54.0 - (k + 1) * per_slot / (1 << 30)
+        self.assertGreater(kv_gb, 45.0)
+
+
 class TestAutoJointSolve(unittest.TestCase):
     """End-to-end through _handle_max_mamba_cache: the auto pool lands on
     exactly slots-per-req * target concurrency state slots (no float-floor
