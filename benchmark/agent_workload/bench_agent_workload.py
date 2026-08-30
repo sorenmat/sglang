@@ -417,7 +417,9 @@ def main():
     parser.add_argument("--request-timeout-s", type=float, default=3600)
     parser.add_argument("--skip-cells", type=int, nargs="*", default=[],
                         help="ctx values to skip (e.g. contexts that exceed VRAM at high c)")
-    parser.add_argument("--extra-server-args", nargs="*", default=[])
+    parser.add_argument("--extra-server-args", default="",
+                        help="comma-separated server flags applied to every run "
+                             "(values must use --flag=value form)")
     parser.add_argument("--mode", default="agent", choices=["agent", "serve"],
                         help="agent: multi-turn sessions; serve: closed-loop bench_serve-"
                              "style with a long shared prefix (deployment-realistic)")
@@ -428,6 +430,9 @@ def main():
                              "(models the prefix-cache-hit reality of agent deployments)")
     parser.add_argument("--num-prompts", type=int, default=64, help="serve mode: total requests")
     args = parser.parse_args()
+    args.extra_server_args = [
+        a.strip() for a in args.extra_server_args.split(",") if a.strip()
+    ]
 
     all_results = {}
     for run_name in args.runs:
