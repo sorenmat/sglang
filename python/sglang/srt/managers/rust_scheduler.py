@@ -154,10 +154,17 @@ def _get_schedule_config() -> Dict[str, Any]:
 
 
 def plan_req_dict(req, *, committed_len: int, prefix_len: int, last_node: int = 0) -> Dict[str, Any]:
-    """One ``PlanReq`` dict (the module's strict schema: all keys present)."""
+    """One ``PlanReq`` dict (the module's strict schema: all keys present).
+
+    ``pool_idx`` is ``0`` while the request holds no pool row yet — waiting
+    reqs always (the row is allocated at batch construction) and hybrid-SSM
+    reqs until their KV row lands; the core's ingress placeholder is 0 too,
+    and the planner treats it as opaque.
+    """
     sampling = req.sampling_params
+    pool_idx = req.req_pool_idx
     return {
-        "pool_idx": int(req.req_pool_idx),
+        "pool_idx": int(pool_idx) if pool_idx is not None else 0,
         "origin_len": len(req.origin_input_ids),
         "out_len": len(req.output_ids),
         "committed_len": int(committed_len),
