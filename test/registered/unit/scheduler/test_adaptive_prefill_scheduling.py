@@ -121,8 +121,10 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         flooded = [SimpleNamespace(origin_input_ids=[0] * 100000) for _ in range(8)]
         s2 = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=flooded)
         s2._last_decode_dispatch_t = time.monotonic() - 0.075
-        # 800K backlog -> floor 16666 -> clamped to the 8192 base chunk
-        self.assertEqual(s2._adaptive_chunk_size(_running_batch()), 8192)
+        # 800K backlog -> floor saturates at the 8192 base chunk -> the
+        # policy steps aside entirely (prefill-first, no shrink, no yield)
+        self.assertEqual(s2._adaptive_prefill_chunk_budget(_running_batch()), -1)
+        self.assertIsNone(s2._adaptive_chunk_size(_running_batch()))
 
         # without a throughput estimate (EWMA cold) nothing shrinks at all
         s3 = _scheduler(tps=None, waiting_queue=queue)

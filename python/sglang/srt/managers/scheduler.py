@@ -1351,14 +1351,26 @@ class Scheduler(
             return -1
         if running_batch.is_empty() or running_batch.is_prefill_only:
             return -1
+        floor = self._adaptive_prefill_chunk_floor()
+        if floor >= self.chunked_prefill_size:
+            # Admission-saturated (backlog >= 48 base chunks): prefill is the
+            # bottleneck, so behave like prefill-first -- shrinking or yielding
+            # here only halves admission throughput. The dispatch-to-dispatch
+            # EWMA cannot see GPU time under overlap scheduling, so a budget
+            # stretch is not a reliable escape; make it structural instead.
+            return -1
         wait_s = time.monotonic() - self._last_decode_dispatch_t
         budget_s = self.decode_latency_budget_s
-        floor = self._adaptive_prefill_chunk_floor()
         if (
             self._prefill_tps_ewma is not None
             and floor > self.adaptive_prefill_min_chunk_tokens
         ):
-            budget_s = max(budget_s, 1.5 * floor / self._prefill_tps_ewma)
+            # Moderate admission pressure stretches the decode budget toward
+            # 1.5 floor-sized chunks; clamp the divisor so an
+            # overlap-inflated EWMA cannot shrink the stretch to zero.
+            budget_s = max(
+                budget_s, 1.5 * floor / max(self._prefill_tps_ewma, 2000.0)
+            )
         if wait_s >= budget_s:
             now = time.monotonic()
             if now - self._last_adaptive_yield_log_t > 30.0:
