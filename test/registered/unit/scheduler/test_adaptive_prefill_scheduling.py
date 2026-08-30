@@ -26,6 +26,8 @@ def _scheduler(
     base_chunk=8192,
     tps=None,
     page_size=1,
+    waiting_queue=(),
+    chunked_req=None,
 ):
     s = object.__new__(Scheduler)
     s.enable_adaptive_prefill = enabled
@@ -33,6 +35,8 @@ def _scheduler(
     s.adaptive_prefill_min_chunk_tokens = min_chunk
     s.chunked_prefill_size = base_chunk
     s.page_size = page_size
+    s.waiting_queue = list(waiting_queue)
+    s.chunked_req = chunked_req
     s._prefill_dispatch_probe = None
     s._prefill_tps_ewma = tps
     s._last_adaptive_yield_log_t = 0.0
@@ -96,6 +100,31 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         s3._last_decode_dispatch_t = time.monotonic() - 0.075
         # remaining budget allows more than the base chunk: stay at base
         self.assertEqual(s3._adaptive_chunk_size(_running_batch()), 8192)
+
+    def test_backlog_grows_the_chunk_floor(self):
+        """A large prefill backlog raises the floor toward the base chunk so
+        admission is never starved by tiny chunks + yield rounds."""
+        import time
+        from types import SimpleNamespace
+
+        queue = [SimpleNamespace(origin_input_ids=[0] * 40000) for _ in range(6)]
+        # remaining-budget cap = 20K tok/s * 25 ms = 500 tokens; the backlog
+        # floor (240K/48 = 5000) must win over both the cap and the 2048 min.
+        s = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
+        s._last_decode_dispatch_t = time.monotonic() - 0.075
+        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 5000)
+
+        flooded = [SimpleNamespace(origin_input_ids=[0] * 100000) for _ in range(8)]
+        s2 = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=flooded)
+        s2._last_decode_dispatch_t = time.monotonic() - 0.075
+        # 800K backlog -> floor 16666 -> clamped to the 8192 base chunk
+        self.assertEqual(s2._adaptive_chunk_size(_running_batch()), 8192)
+
+        # without a throughput estimate (EWMA cold) nothing shrinks at all
+        s3 = _scheduler(tps=None, waiting_queue=queue)
+        import time as t
+        s3._last_decode_dispatch_t = t.monotonic()
+        self.assertIsNone(s3._adaptive_chunk_size(_running_batch()))
 
     def test_over_budget_yields(self):
         import time
