@@ -31,9 +31,9 @@ import torch
 # ---------------------------------------------------------------------------
 
 PRESETS = {
-    # Qwen3.8-27B class: 48 GDN layers, linear key/value head dims 128,
-    # 16 key heads / 32 value heads (single-GPU, tp=1).
-    "qwen38-27b": dict(H=16, HV=32, K=128, V=128, gdn_layers=48),
+    # Qwen3.8-27B: 48 GDN layers, 16 linear key heads / 48 value heads,
+    # head dims 128/128, 16 full-attention layers.
+    "qwen38-27b": dict(H=16, HV=48, K=128, V=128, gdn_layers=48),
     # Qwen3-Next 80B per-TP-shard shape (tp=8).
     "qwen3-next-tp8": dict(H=2, HV=4, K=128, V=128, gdn_layers=48),
     "small": dict(H=4, HV=8, K=128, V=128, gdn_layers=24),
