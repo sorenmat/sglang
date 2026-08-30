@@ -1322,6 +1322,18 @@ class Scheduler(
                 sample if ewma is None else 0.3 * sample + 0.7 * ewma
             )
 
+    def _adaptive_prefill_chunk_floor(self) -> int:
+        """Backlog-aware chunk floor: heavy prefill pressure raises the floor
+        toward the base chunk so admission is never starved by tiny chunks;
+        small/interactive backlogs keep the configured floor."""
+        floor = self.adaptive_prefill_min_chunk_tokens
+        backlog = self._adaptive_prefill_backlog_tokens()
+        if backlog > 0:
+            floor = max(
+                floor, min(self.chunked_prefill_size, backlog // 48)
+            )
+        return floor
+
     def _adaptive_prefill_chunk_budget(self, running_batch: ScheduleBatch) -> int:
         """Token budget for the next prefill chunk that keeps running decode
         requests inside the latency budget:
@@ -1330,13 +1342,24 @@ class Scheduler(
         - already over budget -> 0 (yield the iteration to decode);
         - no throughput estimate yet -> no cap while learning;
         - otherwise -> remaining budget * measured prefill tokens/sec.
-        """
+
+        Under admission pressure (backlog-grown floor) the budget stretches
+        to ~1.5 floor-sized chunks: a yield that fires every round only
+        halves prefill throughput without helping decode's tail, so once
+        chunks are floor-sized decode waits a chunk's worth."""
         if not self.enable_adaptive_prefill:
             return -1
         if running_batch.is_empty() or running_batch.is_prefill_only:
             return -1
         wait_s = time.monotonic() - self._last_decode_dispatch_t
-        if wait_s >= self.decode_latency_budget_s:
+        budget_s = self.decode_latency_budget_s
+        floor = self._adaptive_prefill_chunk_floor()
+        if (
+            self._prefill_tps_ewma is not None
+            and floor > self.adaptive_prefill_min_chunk_tokens
+        ):
+            budget_s = max(budget_s, 1.5 * floor / self._prefill_tps_ewma)
+        if wait_s >= budget_s:
             now = time.monotonic()
             if now - self._last_adaptive_yield_log_t > 30.0:
                 self._last_adaptive_yield_log_t = now
@@ -1344,13 +1367,13 @@ class Scheduler(
                     "Adaptive prefill: decode wait %.1f ms exceeds budget "
                     "%.1f ms; yielding iteration to decode (running bs=%d).",
                     wait_s * 1e3,
-                    self.decode_latency_budget_s * 1e3,
+                    budget_s * 1e3,
                     running_batch.batch_size(),
                 )
             return 0
         if self._prefill_tps_ewma is None:
             return -1
-        return int(self._prefill_tps_ewma * (self.decode_latency_budget_s - wait_s))
+        return int(self._prefill_tps_ewma * (budget_s - wait_s))
 
     def _adaptive_prefill_backlog_tokens(self) -> int:
         """Prompt tokens waiting to be prefilled (queued + in-flight chunk).
@@ -1367,30 +1390,15 @@ class Scheduler(
 
     def _adaptive_chunk_size(self, running_batch: ScheduleBatch) -> Optional[int]:
         """The chunked-prefill budget after adaptive shrinking, or None to keep
-        the configured chunk. Never shrinks below the floor: a chunk must make
-        progress, and the yield rule handles the over-budget case instead.
-
-        The floor is backlog-aware: with a large prefill backlog, tiny chunks
-        starve admission (each yield-to-decode round halves effective prefill
-        throughput), so heavy pressure raises the floor toward the base chunk
-        and the policy degrades to baseline chunking exactly when queues are
-        at risk -- while small/interactive backlogs keep the smooth-decode
-        behavior."""
+        the configured chunk. Never shrinks below the (backlog-aware) floor:
+        a chunk must make progress, and the yield rule handles the
+        over-budget case instead."""
         budget = self._adaptive_prefill_chunk_budget(running_batch)
         if budget < 0:
             return None
-        floor = self.adaptive_prefill_min_chunk_tokens
-        backlog = self._adaptive_prefill_backlog_tokens()
-        if backlog > 0 and self._prefill_tps_ewma is not None:
-            # ~4 prefill-seconds of backlog is enough to start growing the
-            # floor: below that the queue drains quickly either way.
-            backlog_floor = min(
-                self.chunked_prefill_size, int(backlog / 48)
-            )
-            floor = max(floor, backlog_floor)
         return max(
             min(self.chunked_prefill_size, budget),
-            floor,
+            self._adaptive_prefill_chunk_floor(),
             self.page_size or 1,
         )
 

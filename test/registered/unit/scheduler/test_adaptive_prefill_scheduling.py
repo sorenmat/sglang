@@ -112,7 +112,11 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         # floor (240K/48 = 5000) must win over both the cap and the 2048 min.
         s = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
         s._last_decode_dispatch_t = time.monotonic() - 0.075
-        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 5000)
+        # stretched budget (1.5*5000/20K=375ms) minus the 75ms wait caps the
+        # chunk near 6000; the 5000 floor bounds it from below either way.
+        size = s._adaptive_chunk_size(_running_batch())
+        self.assertGreaterEqual(size, 5000)
+        self.assertLessEqual(size, 8192)
 
         flooded = [SimpleNamespace(origin_input_ids=[0] * 100000) for _ in range(8)]
         s2 = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=flooded)
@@ -125,6 +129,27 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         import time as t
         s3._last_decode_dispatch_t = t.monotonic()
         self.assertIsNone(s3._adaptive_chunk_size(_running_batch()))
+
+    def test_backlog_stretches_the_yield_budget(self):
+        """With a deep backlog the decode budget stretches to ~1.5 floor-sized
+        chunks, so the yield no longer fires every round (which would halve
+        prefill throughput)."""
+        import time
+        from types import SimpleNamespace
+
+        queue = [SimpleNamespace(origin_input_ids=[0] * 40000) for _ in range(6)]
+        # floor 5000, tps 20K -> budget = 1.5 * 5000/20000 = 375 ms
+        s = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
+        s._last_decode_dispatch_t = time.monotonic() - 0.2  # 200 ms waited
+        self.assertGreater(s._adaptive_prefill_chunk_budget(_running_batch()), 0)
+        # ... but a wait beyond the stretched budget still yields
+        s2 = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
+        s2._last_decode_dispatch_t = time.monotonic() - 0.5  # 500 ms waited
+        self.assertEqual(s2._adaptive_prefill_chunk_budget(_running_batch()), 0)
+        # no backlog -> original 100 ms budget governs (200 ms wait yields)
+        s3 = _scheduler(tps=20_000.0, budget_ms=100.0)
+        s3._last_decode_dispatch_t = time.monotonic() - 0.2
+        self.assertEqual(s3._adaptive_prefill_chunk_budget(_running_batch()), 0)
 
     def test_over_budget_yields(self):
         import time
