@@ -828,9 +828,10 @@ Done (this effort):
       row), `spec_bench` criterion benches, `test_rust_spec_parity.py`. 38
       `sglang-scheduler` unit tests.
 - [x] M7 RFC content: `rust/rfc/0001-sglang-radix.md` +
-      `rust/rfc/0002-sglang-scheduler.md` (upstream contribution drafts —
-      the PRs themselves open on the target host, contribution order
-      `sglang-radix` → planner per §13).
+      `rust/rfc/0002-sglang-scheduler.md` (design drafts kept on the
+      branch; upstream PRs #37126/#37127 were opened and then closed at
+      the owner's request — contribution deferred until the GPU
+      validation is done).
 - [x] M7 CI gates (§12): one GPU job per flippable stage —
       `rust-scheduler-gate-{radix,core}` in `pr-test.yml` re-run the
       `base-a-test-1-gpu-small` suite with `SGLANG_RUST_SCHEDULER=radix` /
@@ -867,5 +868,7 @@ Remaining (needs the target GPU host, in plan order):
    on the target host; when green, move the `SGLANG_RUST_SCHEDULER` default
    in `python/sglang/srt/environ.py` from `"off"` to the validated stage
    (one line + the docstring; the staged flag makes it reversible).
-5. M7 upstream contribution: open the RFC PRs from `rust/rfc/` (0001
-   `sglang-radix` first, then 0002 `sglang-scheduler`), in plan order.
+5. M7 upstream contribution: withdrawn for now — the RFC PRs
+   (#37126/#37127) were opened and closed at the owner's request; the
+   drafts remain in `rust/rfc/` for whenever the contribution is
+   re-attempted.
