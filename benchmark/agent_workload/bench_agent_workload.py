@@ -385,6 +385,27 @@ def run_serve_cell(base, conc, input_len, args) -> dict:
     }
 
 
+def wait_gpu_free(timeout_s: float = 180.0, threshold_mib: int = 2000) -> bool:
+    """Block until the GPU actually releases the previous server's memory --
+    SIGKILL alone returns before CUDA teardown completes, and the next run's
+    weight load then OOMs against a dead server's 78 GB."""
+    import subprocess as _sp
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            out = _sp.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip().splitlines()[0]
+            if int(out) <= threshold_mib:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(3)
+    return False
+
+
 def count_retractions(log_path: str) -> int:
     try:
         with open(log_path, errors="ignore") as f:
@@ -474,7 +495,9 @@ def main():
                 proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            time.sleep(10)
+            # make sure CUDA memory is really released before the next launch
+            if not wait_gpu_free():
+                print(f"[{run_name}] WARNING: GPU memory did not free after teardown")
 
     # Comparison table: per (c, ctx), relative throughput of each run vs the
     # first run.
