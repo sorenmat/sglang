@@ -13,6 +13,61 @@ independently revertable.
 | 4 | SM120 GDN: FlashInfer prefill auto-default, opt-in verify | `SGLANG_GDN_FLASHINFER_VERIFY_SM120=1` | prefill auto / verify Triton |
 | 5 | Incremental NVFP4 KV dequant mirror | `SGLANG_NVFP4_DQ_MIRROR_FRACTION=0..1` | off (0.0) |
 
+## Measured results (RTX PRO 6000 Blackwell 96GB, Qwen3.8-27B-NVFP4,
+## FP8 KV, MTP 3/1/4, agent-workload harness)
+
+### `--mamba-full-memory-ratio auto` (item 1) -- e2e, c x ctx sweep
+
+| cell | baseline (0.9) | auto | delta |
+|---|---|---|---|
+| c=24, ctx=8K | 330.9 tok/s | 594.9 tok/s | **+80%** |
+| c=24, ctx=32K | 80.4 tok/s | 198.1 tok/s | **+146%** |
+| c=16, ctx=32K | 218.2 tok/s | 252.4 tok/s | +16% |
+| c=16, ctx=8K | 549.7 tok/s | 577.9 tok/s | +5% |
+| c<=8 | -- | -- | +-2% (pool not binding) |
+
+TTFT p99 at c=24/32K: 31.1s -> 2.0s. The fixed 0.9 ratio over-reserves
+state memory (fp32 GDN state + MTP intermediates) and under-provisions
+the KV pool; auto sizes exactly for the target concurrency.
+
+### FlashInfer GDN on SM120 (item 4) -- kernel microbenchmark
+
+- Prefill (8192 tokens, Qwen3.8 geometry): **FlashInfer 0.495 ms/layer
+  vs Triton 1.252 -- 2.53x** (23.8 vs 60.1 ms across 48 layers/chunk).
+- Decode: FlashInfer 1.28-1.33x faster (1.01 vs 1.32 ms/step x48).
+- Target-verify (opt-in `SGLANG_GDN_FLASHINFER_VERIFY_SM120=1`):
+  numerically correct vs Triton (maxdiff <= 6e-5); 1.27-1.42x faster at
+  batch <= 8, parity at 16, 1.03x slower at 24.
+- The auto-default (prefill) fired in the real server log.
+
+### Incremental NVFP4 dequant mirror (item 5) -- kernel microbenchmark
+
+| context | full-prefix dequant | mirror | speedup |
+|---|---|---|---|
+| 32K | 9.3 ms/cycle | 2.0 ms | 4.8x |
+| 128K | 36.1 ms/cycle | 6.7 ms | 5.4x |
+
+The residual is the FP8 row gather (memory-bound copy); the dequant
+compute itself drops to O(newly written tokens).
+
+### `--enable-adaptive-prefill` (item 2) -- e2e
+
+After tuning (backlog-aware floor, budget-covering-floor invariant,
+admission-saturated bypass), measured against prefill-first + auto:
+
+| cell | throughput vs auto | ITL p99 |
+|---|---|---|
+| c=16, ctx=32K | -2% | 1876ms vs 1149ms |
+| c=8-24, ctx=8K | -16% | 400-1100ms vs 220-1100ms |
+| c=24, ctx=32K (overload) | -54% | 2448ms vs 3491ms |
+
+vs *baseline* (default memory + prefill-first) the worst-case decode
+stall drops from 8.5s to 2.4s. This is a tunable tail-latency knob, not
+a throughput win: enable it when interactive smoothness matters, and
+tune `--adaptive-prefill-min-chunk-tokens` (the budget lower-bounds one
+floor-sized chunk at a conservative 2000 tok/s -- a budget below that is
+unsatisfiable and would time-slice prefill/decode 50/50).
+
 ## 1. `--mamba-full-memory-ratio auto`
 
 A fixed split of free VRAM between the linear-attention state pool and
