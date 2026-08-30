@@ -180,8 +180,6 @@ def server_cmd(args, run_name: str) -> list:
         cmd += [
             "--speculative-algorithm",
             "EAGLE",
-            "--speculative-draft-model-path",
-            args.draft_model,
             "--speculative-num-steps",
             steps,
             "--speculative-eagle-topk",
@@ -189,6 +187,10 @@ def server_cmd(args, run_name: str) -> list:
             "--speculative-num-draft-tokens",
             draft,
         ]
+        # MTP-enabled checkpoints carry the draft weights (mtp.* tensors);
+        # only pass an explicit draft path when one was given.
+        if args.draft_model:
+            cmd += ["--speculative-draft-model-path", args.draft_model]
     if run_name in ("auto", "auto+adaptive"):
         cmd += ["--mamba-full-memory-ratio", "auto", "--max-running-requests", str(max(args.concurrencies))]
     elif args.mamba_ratio is not None:
@@ -292,7 +294,7 @@ def run_sweep_cell(base, conc, ctx_tokens, args) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--draft-model", required=True, help="MTP draft weights")
+    parser.add_argument("--draft-model", default=None, help="MTP draft weights (omit when the checkpoint embeds mtp.* tensors)")
     parser.add_argument("--mtp", default="3/1/4", help="steps/topk/draft-tokens")
     parser.add_argument("--kv-cache-dtype", default="fp8_e4m3")
     parser.add_argument("--mem-fraction-static", type=float, default=0.88)
