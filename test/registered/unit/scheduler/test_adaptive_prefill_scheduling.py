@@ -81,24 +81,28 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         self.assertIsNone(s._adaptive_chunk_size(_running_batch()))
 
     def test_chunk_fits_remaining_budget(self):
-        """Chunk = measured tokens/sec * remaining budget, clamped to base."""
+        """Chunk = measured tokens/sec * remaining budget, clamped to base and
+        floored. The budget's floor-chunk invariant (>= floor/2000 s) means
+        the remaining-budget cap only binds when the operator sets a budget
+        above that bound."""
         import time
 
-        s = _scheduler(tps=1000.0, budget_ms=100.0, base_chunk=8192)
-        s._last_decode_dispatch_t = time.monotonic() - 0.075  # 75 ms waited
-        # 25 ms remain -> 1000 tok/s * 0.025 s = 25 tokens... floored to min
-        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 2048)
-
-        s2 = _scheduler(tps=100_000.0, budget_ms=100.0, base_chunk=8192)
-        s2._last_decode_dispatch_t = time.monotonic() - 0.075
-        # 25 ms remain -> ~2500 tokens, below the 8192 base
+        # budget_ms 1200 > floor bound 1024 ms: 25 ms remain at a 1175 ms wait
+        # -> 100K tok/s * 25 ms = 2500 tokens, floored from below by nothing.
+        s2 = _scheduler(tps=100_000.0, budget_ms=1200.0, base_chunk=8192)
+        s2._last_decode_dispatch_t = time.monotonic() - 1.175
         self.assertAlmostEqual(
-            s2._adaptive_chunk_size(_running_batch()), 2500, delta=2
+            s2._adaptive_chunk_size(_running_batch()), 2500, delta=4
         )
 
-        s3 = _scheduler(tps=10_000_000.0, budget_ms=100.0, base_chunk=8192)
-        s3._last_decode_dispatch_t = time.monotonic() - 0.075
+        # low tps: the cap falls under the 2048 floor
+        s = _scheduler(tps=1000.0, budget_ms=1200.0, base_chunk=8192)
+        s._last_decode_dispatch_t = time.monotonic() - 1.175
+        self.assertEqual(s._adaptive_chunk_size(_running_batch()), 2048)
+
         # remaining budget allows more than the base chunk: stay at base
+        s3 = _scheduler(tps=10_000_000.0, budget_ms=1200.0, base_chunk=8192)
+        s3._last_decode_dispatch_t = time.monotonic() - 1.175
         self.assertEqual(s3._adaptive_chunk_size(_running_batch()), 8192)
 
     def test_backlog_grows_the_chunk_floor(self):
@@ -132,33 +136,45 @@ class TestAdaptiveChunkBudget(unittest.TestCase):
         s3._last_decode_dispatch_t = t.monotonic()
         self.assertIsNone(s3._adaptive_chunk_size(_running_batch()))
 
-    def test_backlog_stretches_the_yield_budget(self):
-        """With a deep backlog the decode budget stretches to ~1.5 floor-sized
-        chunks, so the yield no longer fires every round (which would halve
-        prefill throughput)."""
+    def test_budget_covers_floor_chunk_cost(self):
+        """Consistency invariant: the decode budget must cover one floor-sized
+        chunk (at a conservative 2000 tok/s), otherwise every chunk overshoots
+        and the yield fires every round -- time-slicing prefill/decode 50/50
+        (measured: halves admission throughput). The invariant holds even with
+        an inflated EWMA (overlap scheduling measures CPU cadence, not GPU)."""
         import time
         from types import SimpleNamespace
 
-        queue = [SimpleNamespace(origin_input_ids=[0] * 40000) for _ in range(6)]
-        # floor 5000, tps 20K -> budget = 1.5 * 5000/20000 = 375 ms
-        s = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
-        s._last_decode_dispatch_t = time.monotonic() - 0.2  # 200 ms waited
+        # floor 2048 (no backlog) -> budget >= 1.024 s: a 200 ms wait must
+        # NOT yield even though decode_latency_budget_ms is only 100.
+        s = _scheduler(tps=1_000_000.0, budget_ms=100.0)  # inflated EWMA
+        s._last_decode_dispatch_t = time.monotonic() - 0.2
         self.assertGreater(s._adaptive_prefill_chunk_budget(_running_batch()), 0)
-        # ... but a wait beyond the stretched budget still yields
-        s2 = _scheduler(tps=20_000.0, budget_ms=100.0, waiting_queue=queue)
-        s2._last_decode_dispatch_t = time.monotonic() - 0.5  # 500 ms waited
+        # a wait beyond floor/2000 still yields
+        s2 = _scheduler(tps=1_000_000.0, budget_ms=100.0)
+        s2._last_decode_dispatch_t = time.monotonic() - 1.5
         self.assertEqual(s2._adaptive_prefill_chunk_budget(_running_batch()), 0)
-        # no backlog -> original 100 ms budget governs (200 ms wait yields)
-        s3 = _scheduler(tps=20_000.0, budget_ms=100.0)
-        s3._last_decode_dispatch_t = time.monotonic() - 0.2
+        # backlog-grown floor 5000 -> budget >= 2.5 s
+        queue = [SimpleNamespace(origin_input_ids=[0] * 40000) for _ in range(6)]
+        s3 = _scheduler(tps=1_000_000.0, budget_ms=100.0, waiting_queue=queue)
+        s3._last_decode_dispatch_t = time.monotonic() - 1.0
+        self.assertGreater(s3._adaptive_prefill_chunk_budget(_running_batch()), 0)
+        s3._last_decode_dispatch_t = time.monotonic() - 3.0
         self.assertEqual(s3._adaptive_prefill_chunk_budget(_running_batch()), 0)
 
     def test_over_budget_yields(self):
         import time
 
+        # the yield needs a wait beyond the invariant bound: floor 2048 ->
+        # budget >= 1024 ms; a 1.5 s wait yields, a 0.5 s wait does not.
         s = _scheduler(tps=1000.0, budget_ms=50.0)
-        s._last_decode_dispatch_t = time.monotonic() - 0.5  # 500 ms waited
+        s._last_decode_dispatch_t = time.monotonic() - 1.5
         self.assertEqual(s._adaptive_prefill_chunk_budget(_running_batch()), 0)
+        s_nog = _scheduler(tps=1000.0, budget_ms=50.0)
+        s_nog._last_decode_dispatch_t = time.monotonic() - 0.5
+        self.assertGreater(
+            s_nog._adaptive_prefill_chunk_budget(_running_batch()), 0
+        )
 
     def test_floor_respects_page_size(self):
         import time

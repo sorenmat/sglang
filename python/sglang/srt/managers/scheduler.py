@@ -1360,17 +1360,15 @@ class Scheduler(
             # stretch is not a reliable escape; make it structural instead.
             return -1
         wait_s = time.monotonic() - self._last_decode_dispatch_t
-        budget_s = self.decode_latency_budget_s
-        if (
-            self._prefill_tps_ewma is not None
-            and floor > self.adaptive_prefill_min_chunk_tokens
-        ):
-            # Moderate admission pressure stretches the decode budget toward
-            # 1.5 floor-sized chunks; clamp the divisor so an
-            # overlap-inflated EWMA cannot shrink the stretch to zero.
-            budget_s = max(
-                budget_s, 1.5 * floor / max(self._prefill_tps_ewma, 2000.0)
-            )
+        # Consistency invariant: the budget must cover the cost of one
+        # floor-sized chunk. If it did not, every chunk would overshoot the
+        # budget and the yield would fire every round -- time-slicing
+        # prefill/decode ~50/50 (measured: halves admission throughput).
+        # Cost uses a conservative 2000 tok/s, NOT the measured EWMA: under
+        # overlap scheduling the dispatch-to-dispatch EWMA sees CPU cadence,
+        # not GPU time, and is heavily inflated. Operators wanting tighter
+        # decode tails lower --adaptive-prefill-min-chunk-tokens instead.
+        budget_s = max(self.decode_latency_budget_s, floor / 2000.0)
         if wait_s >= budget_s:
             now = time.monotonic()
             if now - self._last_adaptive_yield_log_t > 30.0:
