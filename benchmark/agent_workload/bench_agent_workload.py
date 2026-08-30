@@ -236,21 +236,51 @@ def target_weight_gb(log_path: str) -> float:
 
 
 def launch_server(args, run_name: str, log_path: str):
-    for attempt in range(3):
-        proc, base, weight_gb = _launch_once(args, run_name, log_path)
+    """Launch with retries: the NVFP4 weight load intermittently falls back
+    to dequantized bf16 (4x memory, pool sizing then dies), and a failed
+    attempt can leave GPU-holding children behind. Both failure modes are
+    retried with guaranteed cleanup between attempts."""
+    last_err = None
+    for attempt in range(1, 6):
+        try:
+            proc, base, weight_gb = _launch_once(args, run_name, log_path)
+        except RuntimeError as e:
+            # early exit: still tear down any GPU-holding children so the
+            # retry starts from a clean card
+            last_err = e
+            print(f"[{run_name}] launch attempt {attempt} failed: {e}")
+            _kill_server_trees()
+            continue
         if weight_gb < 0 or weight_gb <= 40.0:
             return proc, base
-        # silent NVFP4->bf16 weight fallback (transient fp4 JIT failure):
-        # tear down and relaunch rather than bench a 4x-memory image
         print(
             f"[{run_name}] weight load used {weight_gb:.1f} GB (bf16 fallback, "
-            f"expected ~20); retrying launch (attempt {attempt + 2}/3)"
+            f"expected ~20); retrying (attempt {attempt + 1}/5)"
         )
         teardown_server(proc)
-        wait_gpu_free()
+    _kill_server_trees()
     raise RuntimeError(
-        f"[{run_name}] weight load kept falling back to bf16; see {log_path}"
+        f"[{run_name}] could not get a quantized load after 5 attempts: {last_err}"
     )
+
+
+def _kill_server_trees() -> None:
+    """Kill every process holding GPU memory and wait for the release."""
+    import subprocess as _sp
+
+    try:
+        pids = _sp.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.split()
+    except Exception:  # noqa: BLE001
+        pids = []
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except (ProcessLookupError, ValueError):
+            pass
+    wait_gpu_free()
 
 
 def _launch_once(args, run_name: str, log_path: str):
