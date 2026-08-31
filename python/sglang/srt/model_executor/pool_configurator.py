@@ -345,6 +345,17 @@ class DefaultPoolConfigurator(MemoryPoolConfigurator):
                 )
                 # FP4 prefill uses one shared FP8 dequant workspace across layers.
                 cell_size += n * k * 2 * kv_size
+                # Optional incremental dequant mirror
+                # (SGLANG_NVFP4_DQ_MIRROR_FRACTION): per-layer FP8 K+V over a
+                # fraction of the pool. Charged HERE, not only in the quant
+                # method's compute_cell_size: this is the sizing path, and
+                # without the term the pool solve claims the full budget and
+                # the mirror then OOMs when it allocates on top.
+                mirror_fraction = envs.SGLANG_NVFP4_DQ_MIRROR_FRACTION.get()
+                if 0.0 < mirror_fraction <= 1.0:
+                    cell_size += int(
+                        n * k * 2 * effective_num_layers * kv_size * mirror_fraction
+                    )
             elif self.kv_cache_dtype_str == "mxfp8":
                 scale_block_size = 32
                 cell_size += (

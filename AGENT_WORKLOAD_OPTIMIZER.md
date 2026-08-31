@@ -104,6 +104,47 @@ acceptance decays at long context, (d) for sustained c>=4 traffic:
 `--mamba-ssm-dtype bfloat16 --linear-attn-verify-backend flashinfer` +
 `SGLANG_GDN_FLASHINFER_VERIFY_SM120=1` is a free +13-16%.
 
+## Uniform FP8 -> uniform NVFP4 KV (one pool, no tiering) -- measured
+## 2026-08-31, acceptance protocol WITHOUT EAGLE (KV4+spec verify is not
+## wired upstream yet); trtllm_mha native-FP4 decode + flashinfer
+## dequant-workspace prefill (the only arg-valid pairing on SM120)
+
+Capacity: **max_total_num_tokens 855,673 -> 1,513,728 = 1.77x** prefix
+capacity at identical mem-fraction.
+
+Quality (greedy, temperature 0, 15-prompt battery incl. three 60k-context
+factual-recall questions):
+- 0/15 exact token match vs the FP8 reference; first divergence typically
+  at token 30-165 of 300-950. Coherent output throughout -- this is KV
+  quantization jitter, not corruption.
+- **All three long-context facts answered correctly on NVFP4 KV**
+  ("fifteen seconds", "the router", "15") at 60k context.
+
+Speed (16 prompts x 512 out, c = 1/4/8 aggregate tok/s):
+
+| arm | c=1 | c=4 | c=8 |
+|---|---|---|---|
+| fp8 (flashinfer decode) | 34.9 | 116.6 | 235.1 |
+| nvfp4 (trtllm_mha decode) | 31.2 | 145.5 | 190.6 |
+| nvfp4 + mirror 0.25 | 31.3 | 131.7 | 190.8 |
+
+ITL p99 is consistently higher on the FP4 decode path (78/94/110ms vs
+49/93/106ms): the native-FP4 decode kernel gives back more than the
+halved bandwidth saves at low batch. The bandwidth win is real in bytes
+but only cashes in under EAGLE verify (4 full-context reads per cycle),
+which needs the upstream spec-compat wiring.
+
+Mirror: performance-neutral without spec (nothing re-reads prefixes per
+cycle); its 5.4x/cycle value applies once verify exists. Fixed an
+integration bug found at fraction=1.0 (23 GB mirror OOM): the pool
+sizing path (DefaultPoolConfigurator._compute_cell_size) never saw the
+mirror term -- now charged there as a linear per-token cost.
+
+Verdict: NVFP4 KV today = a 1.77x CAPACITY play at -11..-19% speed
+(c=1/c=8) through the only available decode kernel. The 30% speed case
+needs it combined with EAGLE verify (upstream PRs) where the bandwidth
+halving multiplies.
+
 ## 1. `--mamba-full-memory-ratio auto`
 
 A fixed split of free VRAM between the linear-attention state pool and
