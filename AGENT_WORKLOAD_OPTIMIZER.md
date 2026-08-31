@@ -68,6 +68,42 @@ tune `--adaptive-prefill-min-chunk-tokens` (the budget lower-bounds one
 floor-sized chunk at a conservative 2000 tok/s -- a budget below that is
 unsatisfiable and would time-slice prefill/decode 50/50).
 
+## bf16 SSM state + FlashInfer GDN decode/verify (measured 2026-08-31,
+## acceptance protocol: 65k input / 60k shared prefix / 1024 out / EAGLE 3/4/1,
+## retractions 0 and accept-length ~3.1 in every arm)
+
+| arm | c=1 | c=2 | c=4 | c=8 |
+|---|---|---|---|---|
+| recipe (fp32 state, Triton GDN) | 21.3 | 46.7 | 74.5 | 118.2 |
+| bf16 state (Triton GDN) | 18.1 | 36.3 | **84.3** | **131.9** |
+| bf16 + FlashInfer decode+verify | 12.9 | 53.7 | 71.0 | 114.4 |
+| bf16 + FlashInfer verify only | 12.9 | 42.6 | **86.6** | 121.5 |
+
+(output tok/s aggregate)
+
+Findings:
+- EAGLE acceptance is UNCHANGED with bf16 state (3.12 vs 3.09 of 4) -- the
+  bf16-state slowdowns below are kernel-side, not accuracy-side.
+- bf16 state frees ~19 GB -> +9.5% KV tokens (855K -> 937K): wins +12-13%
+  at c>=4, loses 15-22% at c=1-2 (Triton's bf16-state path is slower per
+  step; the KV headroom only pays off when requests compete for cache).
+- FlashInfer GDN decode costs ~40% SOLO: it forfeits the packed Triton
+  replaySSM decode fast path (dispatcher reports packed_decode=False).
+  From c=2 up it is competitive; verify-only is the best c=4 arm (+16%).
+- Verdict: not a 30% lever at the deployment's c<=2 operating point. The
+  context-scaling cost lives in the 16 full-attention layers x EAGLE
+  verify over 65k+ KV (already FlashInfer fp8); GDN-side switches cannot
+  move solo decode by 30%.
+
+Realistic 30% paths: (a) NVFP4 KV cache -- halves full-attn verify bytes
+at long context (upstream spec-compat PRs pending; the incremental
+dequant mirror in this branch is the follow-on), (b) cap interactive
+context near 64k (product guidance; the solo curve is 142 -> 11 tok/s
+from 17k -> 232k), (c) adaptive speculation to cut verify passes when
+acceptance decays at long context, (d) for sustained c>=4 traffic:
+`--mamba-ssm-dtype bfloat16 --linear-attn-verify-backend flashinfer` +
+`SGLANG_GDN_FLASHINFER_VERIFY_SM120=1` is a free +13-16%.
+
 ## 1. `--mamba-full-memory-ratio auto`
 
 A fixed split of free VRAM between the linear-attention state pool and
