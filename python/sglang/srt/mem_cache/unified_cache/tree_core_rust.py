@@ -36,7 +36,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 from sglang.srt.mem_cache.events import KVCacheEventRecorder
 from sglang.srt.mem_cache.hicache_storage import PoolHitPolicy, PoolName, PoolTransfer
 from sglang.srt.mem_cache.radix_cache import RadixKey
-from sglang.srt.mem_cache.rust_extensions import load_rust_extension
+from sglang.srt.rust_extensions import load_rust_extension
 from sglang.srt.mem_cache.unified_cache.cache_action import (
     BackupKV,
     FreeComponentDeviceSlot,
@@ -117,7 +117,7 @@ class _RustNode:
     def key(self) -> RadixKey:
         if self._key is None:
             ns = self._core._tree.node_ns(self.id)
-            raw = array("q", self._core._tree.node_key(self.id))
+            raw = array.array("q", self._core._tree.node_key(self.id))
             extra_key, cache_salt = self._core._ns_pairs[ns] if ns else (None, None)
             self._key = RadixKey(
                 raw,
@@ -708,7 +708,13 @@ class UnifiedTreeCoreRust(UnifiedTreeCoreInterface):
             return self._empty_match_result
 
         ns = self._ns_for(key.extra_key, key.cache_salt)
-        device_indices, last_device, last_host, best, host_hit, swa_host_hit, (
+        (
+            device_indices,
+            last_device,
+            last_host,
+            best,
+            host_hit,
+            swa_host_hit,
             mamba_host_hit,
             mamba_branch,
             full_hit,
@@ -867,7 +873,14 @@ class UnifiedTreeCoreRust(UnifiedTreeCoreInterface):
         hash_value: list[str],
     ) -> InsertResult:
         ns = self._ns_for(key.extra_key, key.cache_salt)
-        prefix, total, last_device, mamba_exist, inserted_host, dropped, _created, (
+        (
+            prefix,
+            total,
+            last_device,
+            mamba_exist,
+            inserted_host,
+            dropped,
+            _created,
             cache_actions,
         ) = self._tree.insert_host(
             node_id,

@@ -246,7 +246,7 @@ def structure(core):
                     cd.host_lock_ref,
                 )
             )
-    return sorted(rows)
+    return sorted(rows, key=lambda r: (r[0] or "", r[1]))
 
 
 def _py_walk(root):

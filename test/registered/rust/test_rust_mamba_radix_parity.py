@@ -213,7 +213,7 @@ class TestRustMambaRadixParity(CustomTestCase):
         # A) four disjoint runs: insert / match / lock / full drain.
         runs = [token_run(100 + j, RUN_LEN, j * 1000) for j in range(N_RUNS)]
         for j, ids in enumerate(runs):
-            rs_plen, _, kv, _, mamba = self._rs_insert(ids, values_for(ids), j + 1)
+            rs_plen, _, _exist, kv, _, mamba = self._rs_insert(ids, values_for(ids), j + 1)
             py_res = self._py_insert(ids, values_for(ids), j + 1)
             self.assertEqual(rs_plen, py_res.prefix_len, f"insert run {j}")
             self.assertEqual(py_res.mamba_exist, False)
@@ -246,7 +246,7 @@ class TestRustMambaRadixParity(CustomTestCase):
 
         # lock the leaf of the last run: full walk to the root + the
         # leaf's mamba state.
-        _, rs_leaf = self._rs_match(runs[3])
+        _, rs_leaf, _ = self._rs_match(runs[3])
         py_res = self._py_match(runs[3])
         py_leaf = py_res.last_device_node
         rs_fd, rs_md = rs.inc_lock_ref(rs_leaf)
@@ -310,7 +310,7 @@ class TestRustMambaRadixParity(CustomTestCase):
         self._rs_insert(prefix, values_for(prefix), 61)
         self._py_insert(prefix, values_for(prefix), 61)
         new_prefix = [v + 1_000_000 for v in values_for(prefix)]
-        rs_plen, _, kv, kv_pos, mamba = self._rs_insert(prefix, new_prefix, 62)
+        rs_plen, _, _exist, kv, kv_pos, mamba = self._rs_insert(prefix, new_prefix, 62)
         py_res = self._py_insert(prefix, new_prefix, 62)
         self.assertEqual(rs_plen, 64)
         self.assertEqual(py_res.prefix_len, 64)
@@ -332,7 +332,7 @@ class TestRustMambaRadixParity(CustomTestCase):
         ids10 = list(range(700_000, 700_010))
         self._rs_insert(ids10, values_for(ids10), 71)
         self._py_insert(ids10, values_for(ids10), 71)
-        rs_plen, _, kv, kv_pos, mamba = self._rs_insert(
+        rs_plen, _, _exist, kv, kv_pos, mamba = self._rs_insert(
             ids10, values_for(ids10), 72, prev_prefix_len=4
         )
         py_res = self._py_insert(ids10, values_for(ids10), 72, prev_prefix_len=4)
@@ -413,7 +413,7 @@ class TestRustMambaRadixParity(CustomTestCase):
         # Re-insert A with a fresh state: the tombstone is revived (the
         # state attaches), the incoming full KV overlap is freed.
         new_a = [v + 1_000_000 for v in values_for(a)]
-        rs_plen, _, kv, kv_pos, mamba = self._rs_insert(a, new_a, 9)
+        rs_plen, _, _exist, kv, kv_pos, mamba = self._rs_insert(a, new_a, 9)
         py_res = self._py_insert(a, new_a, 9)
         self.assertEqual(rs_plen, 100)
         self.assertEqual(py_res.prefix_len, 100)
@@ -437,7 +437,8 @@ class TestRustMambaRadixParity(CustomTestCase):
         # One 20-token node, locked; matching 10 tokens splits it.
         ids = list(range(500_000, 500_020))
         rs_leaf = self._rs_insert(ids, values_for(ids), 5)[1]
-        py_leaf = self._py_insert(ids, values_for(ids), 5).last_device_node
+        self._py_insert(ids, values_for(ids), 5)
+        py_leaf = self._py_match(ids).last_device_node
         rs_fd, rs_md = rs.inc_lock_ref(rs_leaf)
         py_res_lock, py_delta = self._py_lock_delta(py_leaf)
         self.assertEqual((rs_fd, rs_md), (-20, -1))
@@ -486,9 +487,11 @@ class TestRustMambaRadixParity(CustomTestCase):
         a = list(range(0, 10))
         b = list(range(100, 110))
         rs_la = self._rs_insert(a, values_for(a), 1)[1]
-        py_la = self._py_insert(a, values_for(a), 1).last_device_node
+        self._py_insert(a, values_for(a), 1)
+        py_la = self._py_match(a).last_device_node
         rs_lb = self._rs_insert(b, values_for(b), 2)[1]
-        py_lb = self._py_insert(b, values_for(b), 2).last_device_node
+        self._py_insert(b, values_for(b), 2)
+        py_lb = self._py_match(b).last_device_node
         rs.inc_lock_ref(rs_la)  # lock A (the LRU leaf)
         py.inc_lock_ref(py_la)
         self._sizes()

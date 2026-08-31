@@ -601,7 +601,7 @@ class TestRustHiRadixParity(CustomTestCase):
         host_q = self._mirror_backups(rs_need)[0]
 
         py_p = self._py_find(tuple(p))
-        py_q = self._py_find(tuple(p + q))
+        py_q = self._py_find(tuple(q))
         self.assertEqual(self._ack(py_p, rs_p), 4)
         self.assertEqual(self._ack(py_q, rs_q), 4)
         rs_num, rs_frees = rs.evict(drain)
@@ -650,7 +650,7 @@ class TestRustHiRadixParity(CustomTestCase):
         host_s = self._mirror_backups(rs_need)[0]
 
         py_r = self._py_find(tuple(r))
-        py_s = self._py_find(tuple(r + s))
+        py_s = self._py_find(tuple(s))
         self._ack(py_r, rs_r)
         self._ack(py_s, rs_s)
         rs_num, rs_frees = rs.evict(drain)
@@ -814,7 +814,7 @@ class TestRustHiRadixParity(CustomTestCase):
         host_q = self._mirror_backups(rs_need)[0]
 
         py_p = self._py_find(tuple(p))
-        py_q = self._py_find(tuple(p + q))
+        py_q = self._py_find(tuple(q))
         self._ack(py_p, rs_p)
         self._ack(py_q, rs_q)
         rs_num, _ = rs.evict(drain)

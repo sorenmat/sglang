@@ -300,6 +300,23 @@ class TreeNode:
         return self.last_access_time < other.last_access_time
 
 
+class _NoopKVAllocator:
+    """Free-path stand-in for `create_simulated` trees (no memory pool).
+
+    The tree's eviction/duplicate-free paths call into the allocator even
+    when the tree is only used as a CPU simulation oracle; those calls are
+    no-ops there.
+    """
+
+    device = "cpu"
+
+    def free_segment(self, kv_indices, start_pos=None):
+        return None
+
+    def free_segments(self, segments):
+        return None
+
+
 class RadixCache(BasePrefixCache):
     def __init__(self, params: CacheInitParams):
         self.disable = params.disable
@@ -343,7 +360,7 @@ class RadixCache(BasePrefixCache):
         params = CacheInitParams(
             disable=disable,
             req_to_token_pool=None,
-            token_to_kv_pool_allocator=mock_allocator,
+            token_to_kv_pool_allocator=mock_allocator or _NoopKVAllocator(),
             page_size=page_size,
             enable_kv_cache_events=enable_kv_cache_events,
         )

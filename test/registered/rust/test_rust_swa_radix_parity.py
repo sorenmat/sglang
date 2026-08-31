@@ -71,20 +71,20 @@ class RecordingSWAAllocator(SWATokenToKVPoolAllocator):
 
     def __init__(self):
         self.device = torch.device("cpu")
-        self.free_kv: list = []
-        self.free_full: list = []
-        self.free_swa: list = []
-        self.set_mappings: list = []
-        self.cleared: list = []
+        self._free_kv: list = []
+        self._free_full: list = []
+        self._free_swa: list = []
+        self._set_mappings: list = []
+        self._cleared: list = []
 
     def free(self, kv_indices, *args, **kwargs):
-        self.free_kv.append(list(kv_indices.tolist()))
+        self._free_kv.append(list(kv_indices.tolist()))
 
     def free_full(self, kv_indices, *args, **kwargs):
-        self.free_full.append(list(kv_indices.tolist()))
+        self._free_full.append(list(kv_indices.tolist()))
 
     def free_swa(self, swa_indices, *args, **kwargs):
-        self.free_swa.append(list(swa_indices.tolist()))
+        self._free_swa.append(list(swa_indices.tolist()))
 
     def translate_loc_from_full_to_swa(self, full_indices):
         # Marker transform: the test inverts it to compare against the
@@ -94,24 +94,24 @@ class RecordingSWAAllocator(SWATokenToKVPoolAllocator):
         )
 
     def set_full_to_swa_mapping(self, full_indices, swa_indices):
-        self.set_mappings.append(
+        self._set_mappings.append(
             (list(full_indices.tolist()), list(swa_indices.tolist()))
         )
 
     def clear_full_to_swa_mapping(self, full_indices, *args, **kwargs):
-        self.cleared.append(list(full_indices.tolist()))
+        self._cleared.append(list(full_indices.tolist()))
 
     def take(self):
         """Snapshot + clear the recorded calls (in call order)."""
         snap = (
-            self.free_kv,
-            self.free_full,
-            self.free_swa,
-            self.set_mappings,
-            self.cleared,
+            self._free_kv,
+            self._free_full,
+            self._free_swa,
+            self._set_mappings,
+            self._cleared,
         )
-        self.free_kv, self.free_full, self.free_swa = [], [], []
-        self.set_mappings, self.cleared = [], []
+        self._free_kv, self._free_full, self._free_swa = [], [], []
+        self._set_mappings, self._cleared = [], []
         return snap
 
 
@@ -307,7 +307,8 @@ class TestRustSWARadixParity(CustomTestCase):
         py_leaf = py.root_node
         for i in range(32):
             k = chain[: i + 1]
-            py_leaf = self._py_insert(k, values_for(k)).last_device_node
+            self._py_insert(k, values_for(k))
+            py_leaf = self._py_match(k).last_device_node
         rs_uuid, rs_delta = rs.inc_lock_ref(leaf)
         py_res_lock = py.inc_lock_ref(py_leaf)
         self.assertIsNone(rs_uuid)
@@ -330,7 +331,8 @@ class TestRustSWARadixParity(CustomTestCase):
         self._rs_insert(a, values_for(a))
         self._py_insert(a, values_for(a))
         rs_leaf = self._rs_insert(ab, values_for(ab))[1]
-        py_leaf = self._py_insert(ab, values_for(ab)).last_device_node
+        self._py_insert(ab, values_for(ab))
+        py_leaf = self._py_match(ab).last_device_node
 
         # Lock the leaf B (window 64 <= 100 -> uuid at B).
         rs.inc_lock_ref(rs_leaf)
@@ -370,12 +372,15 @@ class TestRustSWARadixParity(CustomTestCase):
         # tombstoned, its SWA slots freed, the full lock kept.
         ids = list(range(400_000, 400_010))
         rs_leaf = self._rs_insert(ids, values_for(ids))[1]
-        py_leaf = self._py_insert(ids, values_for(ids)).last_device_node
+        self._py_insert(ids, values_for(ids))
+        py_leaf = self._py_match(ids).last_device_node
         rs_uuid, _ = rs.inc_lock_ref(rs_leaf)
         py_res_lock = py.inc_lock_ref(py_leaf)
         py_uuid = py_res_lock.swa_uuid_for_lock
-        self.assertIsNotNone(rs_uuid)
-        self.assertIsNotNone(py_uuid)
+        # 10-token chain < window 64: no uuid boundary is reached on either
+        # side (dec treats None as unlock-to-root, exclusive).
+        self.assertIsNone(rs_uuid)
+        self.assertIsNone(py_uuid)
         self._sizes()
         self.assertEqual(rs.swa_protected_size(), 10)
 
@@ -453,7 +458,8 @@ class TestRustSWARadixParity(CustomTestCase):
         self._rs_insert(a, values_for(a))
         self._py_insert(a, values_for(a))
         rs_leaf = self._rs_insert(ab, values_for(ab))[1]
-        py_leaf = self._py_insert(ab, values_for(ab)).last_device_node
+        self._py_insert(ab, values_for(ab))
+        py_leaf = self._py_match(ab).last_device_node
 
         first_uuid, _ = rs.inc_lock_ref(rs_leaf)
         first_py_uuid = py.inc_lock_ref(py_leaf).swa_uuid_for_lock

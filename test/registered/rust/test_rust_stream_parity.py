@@ -165,11 +165,11 @@ class TestRustStreamParity(CustomTestCase):
             rids, finish_reasons, prompt_tokens,
             [len(o) for o in output_ids], output_ids, **fam_kw
         )
-        self.assertEqual(
-            rust_header, py_header,
-            "header msgpack bytes diverge (rids/finish/tok-len/shape columns)",
+        assert rust_header == py_header, (
+            "header msgpack bytes diverge (rids/finish/tok-len/shape columns): "
+            f"{rust_header!r} != {py_header!r}"
         )
-        self.assertEqual(rust_data, py_data, "data column bytes diverge")
+        assert rust_data == py_data, "data column bytes diverge"
 
     # ------------------------------------------------------- frame parity
     def test_core_frame_parity(self):
