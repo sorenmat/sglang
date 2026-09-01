@@ -106,26 +106,26 @@ class _RustNode:
     the engine arena).
     """
 
-    __slots__ = ("id", "_core", "_key")
+    __slots__ = ("id", "_core")
 
     def __init__(self, node_id: int, core: "UnifiedTreeCoreRust"):
         self.id = node_id
         self._core = core
-        self._key = None
 
     @property
     def key(self) -> RadixKey:
-        if self._key is None:
-            ns = self._core._tree.node_ns(self.id)
-            raw = array.array("q", self._core._tree.node_key(self.id))
-            extra_key, cache_salt = self._core._ns_pairs[ns] if ns else (None, None)
-            self._key = RadixKey(
-                raw,
-                extra_key=extra_key,
-                is_bigram=self._core.is_eagle,
-                cache_salt=cache_salt,
-            )
-        return self._key
+        # Always read through: a split shrinks the engine-side key of the
+        # surviving child node, and a cached RadixKey would keep serving
+        # the pre-split tokens (the controller walks keys after mutations).
+        ns = self._core._tree.node_ns(self.id)
+        raw = array.array("q", self._core._tree.node_key(self.id))
+        extra_key, cache_salt = self._core._ns_pairs[ns] if ns else (None, None)
+        return RadixKey(
+            raw,
+            extra_key=extra_key,
+            is_bigram=self._core.is_eagle,
+            cache_salt=cache_salt,
+        )
 
     @property
     def parent(self) -> Optional["_RustNode"]:

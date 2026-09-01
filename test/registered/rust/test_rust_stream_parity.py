@@ -439,7 +439,10 @@ class TestRustStrStopParity(CustomTestCase):
             len(req.output_ids),
             _prefix_texts(window, nal),
         )
-        py_kind = None if not hit else py_reason.__class__.__name__
+        # Python signals an invalid-regex abort via the finished_reason side
+        # effect while still returning False (the loop `break`s), so the
+        # reason - not the boolean - is the oracle.
+        py_kind = None if py_reason is None else py_reason.__class__.__name__
         self.assertEqual(
             kinds[kind], py_kind,
             f"{case['name']}: rust {kind!r} vs python {py_kind!r}",
