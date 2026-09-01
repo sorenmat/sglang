@@ -855,6 +855,21 @@ Done (this effort):
       -- -D warnings`).
 
 Remaining (needs the target GPU host, in plan order):
+
+Status 2026-09-01: the 27B serving smoke passed at every stage
+(planner/core/stream healthy with correct generations; stream served
+through the Rust HTTP front end), and the full rust parity set is green
+in-container at `SGLANG_RUST_SCHEDULER=core` — extension 10, radix 2,
+swa 5, mamba 5, unified 3, hiradix 4, spec 5, stream 9+8 subtests,
+trace-replay 5. Three real production bugs were found and fixed on the
+way (HiRadix insert stamping the root's priority; the unified facade's
+cached node key serving pre-split tokens after a split; the unified
+tree-core module unimportable + two tuple-shape bugs). The remaining
+matrix is blocked on a full-GPU window (the kernel tests OOM beside a
+90GB serving container) and on an HF token for the 25 gated
+meta-llama files — the mechanical steps are in
+`rust/GPU_VALIDATION_RUNBOOK.md`.
+
 1. Record the two canonical e2e sessions (coding-agent multi-turn at c16;
    short-turn high-rate) with `SGLANG_TRACE_SCHEDULER` on, and the M1–M11
    Python baselines via `bench_py_radix.py` / `bench_py_planner.py`.
