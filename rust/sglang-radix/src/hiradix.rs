@@ -627,14 +627,11 @@ impl HiRadixTree {
             "insert value must have one KV index per logical unit"
         );
 
-        // HiRadix `insert` stamps the root's priority but NOT its
+        // HiRadix `insert` stamps neither the root's priority nor its
         // last_access_time (the walk starts from the first child); the
-        // one op-time stamps every visited child.
+        // one op-time stamps every visited child, and each visited
+        // child's priority is maxed with the insert's.
         let op_time = self.tick();
-        {
-            let r = &mut self.nodes[ROOT as usize];
-            r.priority = r.priority.max(priority);
-        }
 
         let mut node = ROOT;
         let mut total_prefix_length = 0usize;

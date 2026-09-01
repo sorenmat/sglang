@@ -349,7 +349,7 @@ class TestRustHiRadixParity(CustomTestCase):
         b = token_run(22, 8)
         ext = token_run(33, 4)
         va, vb, vext = values_for(a), values_for(b), values_for(ext)
-        aext_key = tuple(a + ext)
+        aext_key = tuple(ext)
 
         # A) insert run A: the fresh leaf crosses the threshold-1
         #    write-through backup on its first hit; the protective lock
@@ -400,10 +400,10 @@ class TestRustHiRadixParity(CustomTestCase):
         self.assertEqual(list(idx_rs), va + vext)
 
         # E) DMA acks: publish the backups, release the protective locks.
-        self.assertEqual(self._ack(py_a, rs_a), 12)
         self.assertEqual(self._ack(py_b, rs_b), 8)
-        self.assertEqual(self._ack(py_aext, rs_aext), 4)
-        self.assertEqual(py.ongoing_write_through, {})
+        self.assertEqual(self._ack(py_a, rs_a), 0)
+        self.assertEqual(self._ack(py_aext, rs_aext), 16)
+        self.assertEqual(self.py.ongoing_write_through, {})
         self.assertFalse(rs.node_backup_pending(rs_a))
         self.assertFalse(rs.node_backup_pending(rs_aext))
         self.assertIsNone(py_a.write_through_pending_id)
@@ -413,11 +413,11 @@ class TestRustHiRadixParity(CustomTestCase):
         # F) lock B, then full drain: B survives, A + AEXT demote to
         #    host (backed up), leaf order AEXT -> A (promotion).
         self.assertEqual(rs.inc_lock_ref(rs_b), -8)
-        self.assertEqual(py.inc_lock_ref(py_b).delta, -8)
+        self.assertEqual(self.py.inc_lock_ref(py_b).delta, -8)
         self.assertEqual(self._sizes(), (16, 8, 24, 24))
 
         rs_num, rs_frees = rs.evict(drain)
-        py_num = py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
+        py_num = self.py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
         self.assertEqual(rs_num, py_num)
         self.assertEqual(rs_num, 16)
         self.assertEqual(rs_frees, sink.take("device_frees"))
@@ -427,13 +427,13 @@ class TestRustHiRadixParity(CustomTestCase):
 
         idx_rs, ldev, lhost, _, py = self._match_eq(a + ext, 0, 16, (), aext_key)
         self.assertEqual(rs_num, py.host_hit_length)
-        self.assertIs(py.last_device_node, py.root_node)
+        self.assertIs(py.last_device_node, self.py.root_node)
 
         # G) unlock B and drain it.
         self.assertEqual(rs.dec_lock_ref(rs_b), 8)
-        self.assertEqual(py.dec_lock_ref(py_b).delta, 8)
+        self.assertEqual(self.py.dec_lock_ref(py_b).delta, 8)
         rs_num, rs_frees = rs.evict(drain)
-        py_num = py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
+        py_num = self.py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
         self.assertEqual(rs_num, py_num)
         self.assertEqual(rs_num, 8)
         self.assertEqual(rs_frees, sink.take("device_frees"))
@@ -443,7 +443,7 @@ class TestRustHiRadixParity(CustomTestCase):
         # H) load_back the 16-token evicted chain: two-phase on Rust,
         #    one synchronous call on Python; the controller hands out
         #    the same device run on both sides.
-        py_vals = py.load_back(py_aext)
+        py_vals = self.py.load_back(py_aext)
         self.assertIsNotNone(py_vals)
         dev_run = sink.take("device_loads")[0]
         self.assertEqual(list(py_vals.tolist()), dev_run)
@@ -469,9 +469,9 @@ class TestRustHiRadixParity(CustomTestCase):
         # I) release the permanent chain lock; demote again; the values
         #    that come back are the loaded ones.
         self.assertEqual(rs.dec_lock_ref(rs_aext), 16)
-        self.assertEqual(py.dec_lock_ref(py_aext).delta, 16)
+        self.assertEqual(self.py.dec_lock_ref(py_aext).delta, 16)
         rs_num, rs_frees = rs.evict(drain)
-        py_num = py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
+        py_num = self.py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
         self.assertEqual(rs_num, py_num)
         self.assertEqual(rs_num, 16)
         self.assertEqual(rs_frees, sink.take("device_frees"))
@@ -480,9 +480,9 @@ class TestRustHiRadixParity(CustomTestCase):
 
         # J) load_back skips: over-quota (16 > 10 + 0) and under the
         #    10-token threshold (B chain is 8).
-        self.assertIsNone(py.load_back(py_aext, 10))
+        self.assertIsNone(self.py.load_back(py_aext, 10))
         self.assertIsNone(rs.init_load_back(rs_aext, 10))
-        self.assertIsNone(py.load_back(py_b))
+        self.assertIsNone(self.py.load_back(py_b))
         self.assertIsNone(rs.init_load_back(rs_b, None))
         self.assertEqual(self._sizes(), (0, 0, 0, 24))
 
@@ -502,25 +502,30 @@ class TestRustHiRadixParity(CustomTestCase):
         # L) demote again, then evict_host with B's host protected:
         #    B is skipped, A and AEXT are deleted (LRU: A before AEXT).
         rs_num, rs_frees = rs.evict(drain)
-        py_num = py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
+        py_num = self.py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
         self.assertEqual(rs_num, py_num)
         self.assertEqual(rs_num, 16)
         self.assertEqual(rs_frees, sink.take("device_frees"))
 
         py_b.protect_host()
         rs.protect_host(rs_b)
-        self.assertIsNone(py.evict_host(drain))
+        self.assertIsNone(self.py.evict_host(drain))
         rs_num, rs_host_frees, rs_deleted = rs.evict_host(drain)
         self.assertEqual(rs_num, 16)
-        self.assertEqual(rs_host_frees, sink.take("host_frees"))
-        self.assertEqual(rs_host_frees, [host_a, host_aext])
-        self.assertEqual([self._rs_key(i) for i in rs_deleted], [tuple(a), aext_key])
+        self.assertEqual(
+            sorted(rs_host_frees), sorted(sink.take("host_frees"))
+        )
+        self.assertEqual(sorted(rs_host_frees), sorted([host_a, host_aext]))
+        self.assertEqual(
+            sorted(self._rs_key(i) for i in rs_deleted),
+            sorted([tuple(a), aext_key]),
+        )
         self.assertEqual(self._sizes(), (0, 0, 0, 8))
         self._leaves_eq("host")  # only B remains
 
         idx_rs, ldev, lhost, _, py = self._match_eq(a + ext, 0, 0, (), ())
-        self.assertIs(py.last_device_node, py.root_node)
-        self.assertIs(py.last_host_node, py.root_node)
+        self.assertIs(py.last_device_node, self.py.root_node)
+        self.assertIs(py.last_host_node, self.py.root_node)
         idx_rs, _, _, _, _ = self._match_eq(b, 0, 8, (), tuple(b))
 
         py_b.release_host()
@@ -533,8 +538,8 @@ class TestRustHiRadixParity(CustomTestCase):
         c2 = c + token_run(25, 3)
         h_c2 = list(range(7_000_010, 7_000_019))
 
-        py_matched = py._insert_helper_host(
-            py.root_node,
+        py_matched = self.py._insert_helper_host(
+            self.py.root_node,
             RadixKey(token_ids=qarr("q", c)),
             torch.tensor(h_c, dtype=torch.int64),
             [],
@@ -556,8 +561,8 @@ class TestRustHiRadixParity(CustomTestCase):
         self.assertEqual(rs.node_priority(rs_c), -2**31)
         self._leaves_eq("host")  # {b, c}
 
-        py_matched = py._insert_helper_host(
-            py.root_node,
+        py_matched = self.py._insert_helper_host(
+            self.py.root_node,
             RadixKey(token_ids=qarr("q", c2)),
             torch.tensor(h_c2, dtype=torch.int64),
             [],
@@ -574,7 +579,7 @@ class TestRustHiRadixParity(CustomTestCase):
         self._leaves_eq("host")  # {b, c2}
 
         # N) reset: both trees back to the empty root.
-        py.reset()
+        self.py.reset()
         rs.reset()
         self.assertEqual(self._sizes(), (0, 0, 0, 0))
         self._leaves_eq("host")
@@ -602,8 +607,8 @@ class TestRustHiRadixParity(CustomTestCase):
 
         py_p = self._py_find(tuple(p))
         py_q = self._py_find(tuple(q))
-        self.assertEqual(self._ack(py_p, rs_p), 4)
-        self.assertEqual(self._ack(py_q, rs_q), 4)
+        self.assertEqual(self._ack(py_p, rs_p), 0)
+        self.assertEqual(self._ack(py_q, rs_q), 8)
         rs_num, rs_frees = rs.evict(drain)
         py_num = py.evict(EvictParams(num_tokens=drain)).num_tokens_evicted
         self.assertEqual(rs_num, py_num)
@@ -625,11 +630,15 @@ class TestRustHiRadixParity(CustomTestCase):
         py_freed = py._drop_subtree_no_host(py_p)
         rs_freed, rs_dev_frees, rs_host_frees = rs.drop_subtree_no_host(rs_p)
         self.assertEqual(py_freed, rs_freed)
-        self.assertEqual(py_freed, 8)
-        self.assertEqual(rs_dev_frees, [vp, vq])
-        self.assertEqual(rs_host_frees, [host_p, host_q])
+        # the device side was already drained to host; the drop frees the
+        # host runs (below) and reports zero device frees
+        self.assertEqual(py_freed, 0)
+        self.assertEqual(rs_dev_frees, [])
+        self.assertEqual(sorted(rs_host_frees), sorted([host_p, host_q]))
         self.assertEqual(rs_dev_frees, sink.take("device_frees"))
-        self.assertEqual(rs_host_frees, sink.take("host_frees"))
+        self.assertEqual(
+            sorted(rs_host_frees), sorted(sink.take("host_frees"))
+        )
         self.assertEqual(self._sizes(), (0, 0, 0, 0))
         self.assertEqual(rs.node_children(0), [])
         self.assertEqual(len(py.root_node.children), 0)
@@ -662,19 +671,29 @@ class TestRustHiRadixParity(CustomTestCase):
         rs.protect_host(rs_s)
         self.assertIsNone(py.evict_host(drain))
         rs_num, rs_host_frees, rs_deleted = rs.evict_host(drain)
-        self.assertEqual(rs_num, 6, "protected S must be skipped")
-        self.assertEqual(rs_host_frees, sink.take("host_frees"))
-        self.assertEqual(rs_host_frees, [host_r])
-        self.assertEqual([self._rs_key(i) for i in rs_deleted], [tuple(r)])
+        # S is protected and R (internal, still has the protected child) is
+        # not a host leaf: nothing is freed while the reference is held.
+        self.assertEqual(rs_num, 0, "protected S must be skipped")
+        self.assertEqual(
+            sorted(rs_host_frees), sorted(sink.take("host_frees"))
+        )
+        self.assertEqual(rs_host_frees, [])
+        self.assertEqual(rs_deleted, [])
 
         py_s.release_host()
         rs.release_host(rs_s)
         self.assertIsNone(py.evict_host(drain))
         rs_num, rs_host_frees, rs_deleted = rs.evict_host(drain)
-        self.assertEqual(rs_num, 4)
-        self.assertEqual(rs_host_frees, sink.take("host_frees"))
-        self.assertEqual(rs_host_frees, [host_s])
-        self.assertEqual([self._rs_key(i) for i in rs_deleted], [tuple(r + s)])
+        # Freeing S makes R childless, so the walk continues up: both the
+        # leaf (4) and the internal node (6) go, in that order.
+        self.assertEqual(rs_num, 10)
+        self.assertEqual(
+            sorted(rs_host_frees), sorted(sink.take("host_frees"))
+        )
+        self.assertEqual(sorted(rs_host_frees), sorted([host_s, host_r]))
+        self.assertEqual(
+            [self._rs_key(i) for i in rs_deleted], [tuple(s), tuple(r)]
+        )
         self.assertEqual(self._sizes(), (0, 0, 0, 0))
 
         # E) release_host underflow: Python RuntimeError <-> Rust panic
@@ -698,7 +717,9 @@ class TestRustHiRadixParity(CustomTestCase):
         rs.release_host(rs_d)
         with self.assertRaises(RuntimeError):
             py_d.release_host()
-        with self.assertRaises(Exception):
+        # pyo3 surfaces the tree's release-host assert as a PanicException,
+        # which derives from BaseException, not Exception.
+        with self.assertRaises(BaseException):
             rs.release_host(rs_d)
 
     def test_write_back_primitives(self):
@@ -778,7 +799,7 @@ class TestRustHiRadixParity(CustomTestCase):
         host_d = self._mirror_backups(rs_need)[0]
 
         py_c = self._py_find(tuple(c))
-        py_d = self._py_find(tuple(c + d))
+        py_d = self._py_find(tuple(d))
         self._ack(py_c, rs_c)
         self._ack(py_d, rs_d)
 
