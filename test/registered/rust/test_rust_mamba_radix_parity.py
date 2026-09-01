@@ -26,6 +26,7 @@ partial evictions run on single-leaf trees, and multi-leaf trees are
 fully drained.
 """
 
+import itertools
 import unittest
 from array import array as qarr
 
@@ -130,10 +131,18 @@ class TestRustMambaRadixParity(CustomTestCase):
         # environment; pin it to the FLA default.
         cls._orig_chunk_fn = mamba_module.mamba_cache_chunk_size
         mamba_module.mamba_cache_chunk_size = lambda: CHUNK
+        # Pin the Python tree's wall-clock stamps to a strict counter: the
+        # real clock can return equal values for successive nodes, which
+        # flips the LRU victim order run to run, while the Rust tree ticks
+        # strictly per node.
+        cls._clock = itertools.count()
+        cls._orig_clock = mamba_module.get_last_access_time
+        mamba_module.get_last_access_time = lambda: float(next(cls._clock))
 
     @classmethod
     def tearDownClass(cls):
         mamba_module.mamba_cache_chunk_size = cls._orig_chunk_fn
+        mamba_module.get_last_access_time = cls._orig_clock
         super().tearDownClass()
 
     def setUp(self):
@@ -320,9 +329,9 @@ class TestRustMambaRadixParity(CustomTestCase):
         self.assertEqual(mamba, [])
         self._frees(kv, kv_pos, mamba)
         self._sizes()
-        rs.evict(drain, drain)
+        _, _, kv, kv_pos, mamba = rs.evict(drain, drain)
         py.evict(EvictParams(num_tokens=drain, mamba_num=drain))
-        self._frees([], [], [])
+        self._frees(kv, kv_pos, mamba)
         self._sizes()
         self.assertEqual(self._sizes()[4], (0, 0))
 
@@ -351,8 +360,9 @@ class TestRustMambaRadixParity(CustomTestCase):
         ab = list(range(0, 200))
         self._rs_insert(a, values_for(a), 1)
         self._py_insert(a, values_for(a), 1)
-        self._rs_insert(ab, values_for(ab), 2)
+        _, _, _, kv_ab, kv_pos_ab, mamba_ab = self._rs_insert(ab, values_for(ab), 2)
         self._py_insert(ab, values_for(ab), 2)
+        self._frees(kv_ab, kv_pos_ab, mamba_ab)
         self._sizes()
 
         _, _, kv, kv_pos, mamba = rs.evict(0, 1)
@@ -404,10 +414,12 @@ class TestRustMambaRadixParity(CustomTestCase):
         ab = list(range(300_000, 300_200))
         self._rs_insert(a, values_for(a), 1)
         self._py_insert(a, values_for(a), 1)
-        self._rs_insert(ab, values_for(ab), 2)
+        _, _, _, kv_ab, kv_pos_ab, mamba_ab = self._rs_insert(ab, values_for(ab), 2)
         self._py_insert(ab, values_for(ab), 2)
-        rs.evict(0, 1)  # tombstone A's state
+        self._frees(kv_ab, kv_pos_ab, mamba_ab)
+        _, _, kv_te, kv_pos_te, mamba_te = rs.evict(0, 1)  # tombstone A's state
         py.evict(EvictParams(num_tokens=0, mamba_num=1))
+        self._frees(kv_te, kv_pos_te, mamba_te)
         self._sizes()
 
         # Re-insert A with a fresh state: the tombstone is revived (the

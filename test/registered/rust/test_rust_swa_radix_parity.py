@@ -271,7 +271,7 @@ class TestRustSWARadixParity(CustomTestCase):
         # drain is a no-op now; assert no stray allocator calls
         _, _, kv, full, swa = rs.evict(drain, drain)
         py.evict(EvictParams(num_tokens=drain, swa_num_tokens=drain))
-        self._frees([], [], [])
+        self._frees(kv, full, swa)
         self._sizes()
         self.assertEqual(self._sizes()[4], (0, 0))
 
@@ -290,9 +290,9 @@ class TestRustSWARadixParity(CustomTestCase):
         self.assertEqual(rec, [])
         self._frees(kv, full, swa)
         self._sizes()
-        rs.evict(drain, drain)
+        _, _, kv, full, swa = rs.evict(drain, drain)
         py.evict(EvictParams(num_tokens=drain, swa_num_tokens=drain))
-        self._frees([], [], [])
+        self._frees(kv, full, swa)
         self._sizes()
         self.assertEqual(self._sizes()[4], (0, 0))
 
@@ -330,8 +330,9 @@ class TestRustSWARadixParity(CustomTestCase):
         ab = list(range(0, 200))
         self._rs_insert(a, values_for(a))
         self._py_insert(a, values_for(a))
-        rs_leaf = self._rs_insert(ab, values_for(ab))[1]
+        _, rs_leaf, _kv, _full, _swa, _rec = self._rs_insert(ab, values_for(ab))
         self._py_insert(ab, values_for(ab))
+        self._frees(_kv, _full, _swa)
         py_leaf = self._py_match(ab).last_device_node
 
         # Lock the leaf B (window 64 <= 100 -> uuid at B).
@@ -457,8 +458,9 @@ class TestRustSWARadixParity(CustomTestCase):
         ab = list(range(600_000, 600_200))
         self._rs_insert(a, values_for(a))
         self._py_insert(a, values_for(a))
-        rs_leaf = self._rs_insert(ab, values_for(ab))[1]
+        _, rs_leaf, _kv, _full, _swa, _rec = self._rs_insert(ab, values_for(ab))
         self._py_insert(ab, values_for(ab))
+        self._frees(_kv, _full, _swa)
         py_leaf = self._py_match(ab).last_device_node
 
         first_uuid, _ = rs.inc_lock_ref(rs_leaf)
@@ -490,10 +492,10 @@ class TestRustSWARadixParity(CustomTestCase):
         self.assertEqual(incoming, new_ab[:100])
         # Python applied: remap A at the marker-transformed incoming SWA,
         # clear the incoming mapping, and free the incoming full slots.
-        py_tree_value, py_swa = self.alloc.set_mappings[0]
+        py_tree_value, py_swa = self.alloc._set_mappings[0]
         self.assertEqual(py_tree_value, tree_value)
         self.assertEqual(py_swa, [v + 500_000 for v in incoming])
-        self.assertEqual(self.alloc.cleared, [incoming])
+        self.assertEqual(self.alloc._cleared, [incoming])
         # B's new incoming overlap was freed as full+swa on both sides,
         # A's incoming full side via free_full.
         self.assertEqual(kv, [new_ab[100:]])
