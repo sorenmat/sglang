@@ -107,6 +107,9 @@ class SchedulerBatchResultProcessor:
                 if get_memory().enable_hisparse:
                     self.hisparse_coordinator.request_finished(req)
                 release_kv_cache(req, self.tree_cache)
+                _hkv = getattr(self, 'host_kv_tier', None) or getattr(getattr(self, 'scheduler', None), 'host_kv_tier', None)
+                if _hkv is not None and req.req_pool_idx is not None:
+                    _hkv.forget_row(int(req.req_pool_idx))
 
         # Note: Logprobs should be handled on the prefill engine.
         self.output_streamer.stream_output(batch.reqs, batch.return_logprob)
@@ -275,6 +278,9 @@ class SchedulerBatchResultProcessor:
                         self._maybe_collect_routed_experts(req)
                         self._maybe_collect_indexer_topk(req)
                         release_kv_cache(req, self.tree_cache)
+                        _hkv = getattr(self, 'host_kv_tier', None) or getattr(getattr(self, 'scheduler', None), 'host_kv_tier', None)
+                        if _hkv is not None and req.req_pool_idx is not None:
+                            _hkv.forget_row(int(req.req_pool_idx))
                         req.time_stats.set_completion_time()
                     elif not batch.decoding_reqs or req not in batch.decoding_reqs:
                         maybe_cache_unfinished_req(req, self.tree_cache)
@@ -354,6 +360,9 @@ class SchedulerBatchResultProcessor:
 
                     if req.finished():
                         release_kv_cache(req, self.tree_cache)
+                        _hkv = getattr(self, 'host_kv_tier', None) or getattr(getattr(self, 'scheduler', None), 'host_kv_tier', None)
+                        if _hkv is not None and req.req_pool_idx is not None:
+                            _hkv.forget_row(int(req.req_pool_idx))
                         req.time_stats.set_completion_time()
                     else:
                         maybe_cache_unfinished_req(req, self.tree_cache)

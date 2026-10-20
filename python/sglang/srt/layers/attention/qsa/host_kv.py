@@ -800,22 +800,10 @@ class HostKVTier:
             # and starves the live one (the N=4 native wedge: 2.4B
             # coverage misses, zero progress). Drop the dead state.
             if int(lens[i].item()) <= 1:
-                if st["ctx_written"] > 0:
-                    self.rows.pop(row, None)
-                continue
-            # A finished request's stash slot keeps its LAST capture until
-            # the slot is reused - captured_len <= 1 never fires for it -
-            # and the tick would service the dead row forever. Healthy
-            # decoding rows update captured_len every iteration; frozen
-            # for this many ticks means the row is finished.
-            cur_len = int(lens[i].item())
-            if st.get("last_tick_len") == cur_len:
-                st["frozen_ticks"] = st.get("frozen_ticks", 0) + 1
-            else:
-                st["frozen_ticks"] = 0
-                st["last_tick_len"] = cur_len
-            if st["frozen_ticks"] > 128:
-                self.rows.pop(row, None)
+                # Not yet captured: warmup dummy or a request still in
+                # PREFILL (its first draft-extend capture comes only
+                # after prefill). Nothing to restore; row lifecycle is
+                # owned by forget_row at request finish.
                 continue
             pos = idx[i]
             sel = pos[pos >= 0]
@@ -865,6 +853,16 @@ class HostKVTier:
                 if resolved is not None and hasattr(
                         resolved, "forward_extend"):
                     resolved.host_kv_tier = self
+
+    def forget_row(self, row: int) -> None:
+        """Scheduler-driven row cleanup at request finish - the only
+        reliable death signal. The stash-row heuristics were wrong: a
+        live request mid-prefill ALSO reads captured_len==1 (capture
+        happens at the first draft-extend, after prefill), so the tick
+        was deleting live rows every iteration and exploding starvation
+        (406k starved restores on a single prefiling request)."""
+        if self.rows.pop(row, None) is not None and self.cfg.stats_path:
+            self.dump_stats()
 
     def scheduler_tick(self, model_worker: Any) -> None:
         """Scheduler-side between-replay entry: resolve the selection
