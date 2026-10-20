@@ -51,10 +51,20 @@ def wait_healthy(port: int, timeout: float = 900) -> None:
 
 
 def launch(server_script, gpu, port, name, mode, ctx160k, log):
-    subprocess.run(
+    # Free the port first: a differently-named leftover container
+    # holding it makes docker run fail with "port already allocated".
+    holders = subprocess.run(
+        ["sudo", "-n", "docker", "ps", "-q", "--filter",
+         f"publish={port}"], capture_output=True, text=True).stdout.split()
+    for cid in holders:
+        subprocess.run(["sudo", "-n", "docker", "rm", "-f", cid],
+                       capture_output=True)
+    res = subprocess.run(
         ["bash", server_script, str(gpu), str(port), name, mode,
          "1600", "1" if ctx160k else "0"],
-        check=True, capture_output=True)
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"launch failed: {res.stderr[-400:]}")
     wait_healthy(port)
 
 
