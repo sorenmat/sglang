@@ -1,0 +1,4 @@
+{"mode": "vanilla", "n": 1, "ctx": "101k", "wall": 26.1, "ok": 1}
+{"mode": "vanilla", "n": 4, "ctx": "101k", "wall": 56.0, "ok": 4}
+{"mode": "vanilla", "n": 8, "ctx": "101k", "wall": 113.7, "ok": 8}
+{"mode": "tier", "n": 1, "ctx": "101k", "wall": 33.7, "ok": 1}
