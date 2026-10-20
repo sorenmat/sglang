@@ -94,8 +94,9 @@ def run_cell(port, n, ctx, session_base=0):
                 "prompt": r["usage"]["prompt_tokens"],
                 "completion": r["usage"]["completion_tokens"],
                 "finish": r["choices"][0].get("finish_reason"),
-                "logprobs": [c.get("logprob") for c in r["choices"][0]
-                             .get("logprobs", [])][:900],
+                "logprobs": [c.get("logprob") for c in (
+                    (r["choices"][0].get("logprobs") or {})
+                    .get("content") or [])][:900],
                 "content": r["choices"][0]["message"]["content"][:4000],
             }
         except Exception as e:  # noqa: BLE001
