@@ -57,6 +57,31 @@ def build_qsa_indexer(
     )
 
 
+def resolve_selection_stash(eagle_worker) -> "object | None":
+    """The backend object carrying ``_mtp_shared_sparse_indices``.
+
+    Runtime-proven path (boot-time BFS, 2026-10-20): under speculative
+    decoding ``scheduler.model_worker`` IS the eagle worker, whose
+    ``_draft_worker`` holds the draft backends; the stash is set on the
+    draft-extend backend's full-attention side. Falls back to the
+    target's model-runner backend for non-MTP shapes.
+    """
+    for cand in (getattr(eagle_worker, "_draft_worker", None),
+                 getattr(eagle_worker, "draft_worker", None)):
+        if cand is None:
+            continue
+        for attr in ("draft_extend_attn_backend", "draft_attn_backend"):
+            b = getattr(cand, attr, None)
+            if b is None:
+                continue
+            for resolved in (b, getattr(b, "full_attn_backend", None)):
+                if resolved is not None and getattr(
+                        resolved, "_mtp_shared_sparse_indices", None
+                ) is not None:
+                    return resolved
+    return None
+
+
 def resolve_qsa_sparse_backend(attn_backend):
     """Backend owning the QSA MTP sparse-selection hooks.
 

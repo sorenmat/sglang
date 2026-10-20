@@ -1,0 +1,211 @@
+{
+  "status": "Analytical two-GPU layout candidate; not implemented or measured",
+  "context_tokens_per_request": 262144,
+  "concurrency": 32,
+  "usable_GPU_GiB_each_assumption": 94.2,
+  "KV_precision": "BF16 unchanged",
+  "quality_reference": "Existing NVFP4 checkpoint with its existing FP8 PLE; no BF16-PLE equivalence claimed",
+  "layout": "Single authoritative copy of each original KV page across host and GPUs; all original index keys on GPUs",
+  "scenarios": [
+    {
+      "host_capacity_decimal_GB": 235,
+      "assumed_weights_GiB": 78,
+      "index_copies_across_GPUs": 1,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 78,
+        "original_target_and_draft_index": 6.5,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 7.363353729248047,
+      "ideal_balanced_per_GPU_GiB": 84.334375,
+      "per_GPU_headroom_GiB": 9.865625000000009
+    },
+    {
+      "host_capacity_decimal_GB": 235,
+      "assumed_weights_GiB": 78,
+      "index_copies_across_GPUs": 2,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 78,
+        "original_target_and_draft_index": 13.0,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 7.363353729248047,
+      "ideal_balanced_per_GPU_GiB": 87.584375,
+      "per_GPU_headroom_GiB": 6.6156250000000085
+    },
+    {
+      "host_capacity_decimal_GB": 235,
+      "assumed_weights_GiB": 81.8,
+      "index_copies_across_GPUs": 1,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 81.8,
+        "original_target_and_draft_index": 6.5,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 7.363353729248047,
+      "ideal_balanced_per_GPU_GiB": 86.234375,
+      "per_GPU_headroom_GiB": 7.965625000000003
+    },
+    {
+      "host_capacity_decimal_GB": 235,
+      "assumed_weights_GiB": 81.8,
+      "index_copies_across_GPUs": 2,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 81.8,
+        "original_target_and_draft_index": 13.0,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 7.363353729248047,
+      "ideal_balanced_per_GPU_GiB": 89.484375,
+      "per_GPU_headroom_GiB": 4.715625000000003
+    },
+    {
+      "host_capacity_decimal_GB": 250,
+      "assumed_weights_GiB": 78,
+      "index_copies_across_GPUs": 1,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 78,
+        "original_target_and_draft_index": 6.5,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 21.333192348480225,
+      "ideal_balanced_per_GPU_GiB": 84.334375,
+      "per_GPU_headroom_GiB": 9.865625000000009
+    },
+    {
+      "host_capacity_decimal_GB": 250,
+      "assumed_weights_GiB": 78,
+      "index_copies_across_GPUs": 2,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 78,
+        "original_target_and_draft_index": 13.0,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 21.333192348480225,
+      "ideal_balanced_per_GPU_GiB": 87.584375,
+      "per_GPU_headroom_GiB": 6.6156250000000085
+    },
+    {
+      "host_capacity_decimal_GB": 250,
+      "assumed_weights_GiB": 81.8,
+      "index_copies_across_GPUs": 1,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 81.8,
+        "original_target_and_draft_index": 6.5,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 21.333192348480225,
+      "ideal_balanced_per_GPU_GiB": 86.234375,
+      "per_GPU_headroom_GiB": 7.965625000000003
+    },
+    {
+      "host_capacity_decimal_GB": 250,
+      "assumed_weights_GiB": 81.8,
+      "index_copies_across_GPUs": 2,
+      "host_items_GiB": {
+        "authoritative_target_and_draft_KV": 144.0,
+        "existing_checkpoint_FP8_PLE_approx": 47.497451305389404,
+        "host_operating_reserve": 20.0
+      },
+      "GPU_items_GiB_total": {
+        "main_and_draft_weights_assumed": 81.8,
+        "original_target_and_draft_index": 13.0,
+        "authoritative_target_and_draft_KV": 64.0,
+        "committed_GDN": 3.375,
+        "one_layer_GDN_scratch": 0.09375,
+        "recurrence_and_metadata_allowance": 0.7,
+        "workspace_both_GPUs": 8.0,
+        "additional_transfer_and_transient_reserve_both_GPUs": 8.0
+      },
+      "host_total_GiB": 211.4974513053894,
+      "host_headroom_GiB": 21.333192348480225,
+      "ideal_balanced_per_GPU_GiB": 89.484375,
+      "per_GPU_headroom_GiB": 4.715625000000003
+    }
+  ],
+  "constraints": [
+    "The 64 GiB GPU KV has no permanent host backing copy. Existing full-host-archive budget.py does not implement this placement.",
+    "Moving authoritative pages requires ownership tracking and safe H2D/D2H staging; additional bidirectional traffic is not modeled as a throughput result.",
+    "FP8 PLE allocation is approximate; include scales/alignment in actual measurements.",
+    "Per-card balance, real weights, index replication, loading/prefill peaks, pinned RAM and allocator overhead require measurement.",
+    "Reserves are explicit allowances, not proofs of sufficient operational headroom.",
+    "No 95% cache-hit rate or end-to-end throughput is established."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "status": "CPU preparation complete; no GPU inference, model quality, or GPU speed measured",
+  "workload": {
+    "requests": 50,
+    "observed_prompt_tokens": {
+      "min": 9501,
+      "median": 34355.5,
+      "max": 167766,
+      "total": 1925668,
+      "counts_at_least": {
+        "4096": 50,
+        "16384": 45,
+        "32768": 28,
+        "65536": 2,
+        "131072": 1,
+        "262144": 0
+      }
+    },
+    "source": "/home/smo/code/llm-performance/results/swebench-20260923-161724-flashnext-nvfp4-n50-defaults",
+    "reconstructed_not_wire_captured": true
+  },
+  "verification": {
+    "unittest_tests_passed": 9,
+    "large_synthetic_probe_cases": 30,
+    "probe_edge_checks": "48 adversarial/randomized configurations passed bounds and exact top-k",
+    "synthetic_capture_replay_cases": 24,
+    "synthetic_native_set_mismatches": 0,
+    "real_model_captures_tested": 0,
+    "cli_mismatch_exit_code_checked": 2
+  },
+  "actual_cpu_packed_array_bytes_for_65536_keys_of_128_dimensions": {
+    "4": 4718592,
+    "6": 6815744,
+    "8": 8912896
+  },
+  "model_capture_contract": "CPU_WORKFLOW.md",
+  "inspected_runtime": {
+    "commit": "4ccff141dbe992794f9da6c3aa23535b4f72000d",
+    "maximum_verification_positions_without_pending_state_redesign": 4
+  },
+  "source_sha256": {
+    "budget.py": "f1ecd295aade117788af4f121d0a57a7dd61d42e6ec630f55184a1c6f281324f",
+    "codec.py": "a46ed6636be5aa12df4e0810117f59b9c2f102d579431fff881aeb1bd3fd1620",
+    "probe.py": "33b403a7f0f5b7fe103a17041b7b2b5a3c3a60553929d4f1c1f73d875864cbab",
+    "replay.py": "2f545afdeb79ac942c173b6c3b43293e3f3623e70ed6c466fecfe3fafe1b7e2f",
+    "test_budget.py": "e6dbb2eb8424b3fa4ee8ddddf2f2b7887cdeba7d78a14f2f08ff6bbbf56d06be",
+    "test_codec.py": "16db5b0ab1537dd2809ef09df441dd5d297d27bab2c78f6893f6821c1e200614",
+    "test_replay.py": "8da7be289038fcfd21c3b228fddc92cee241b9195be77b1480b441ad79c03ea5",
+    "test_workload.py": "1c7631622fd0458e03931ef4633df683ea12f3fc758d066709e4d603463c51a5",
+    "workload.py": "080addc1534ff50a03047f6c98bdc5ec74e6557c0f09e6b3012467343e55d628"
+  },
+  "remaining": [
+    "Real QSA query/key/native-score captures",
+    "Production floating-point and tie/attention-order preservation",
+    "Longer verification state/write-plan redesign if pursued",
+    "GPU kernels, transfers, peak memory, throughput and paired model quality"
+  ]
+}

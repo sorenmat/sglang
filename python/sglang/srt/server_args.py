@@ -2684,6 +2684,50 @@ class ServerArgs:
     ] = False
 
     # -------------------------------------------------------------------------
+    # Host-KV tier (QSA sparse-attention models)
+    # -------------------------------------------------------------------------
+    host_kv_tier: A[
+        bool,
+        "Enable the host-RAM KV memory tier: cold full-attention pages retire to a pinned host mirror and restore on demand, so the GPU pool serves contexts larger than its token budget.",
+        NS("memory"),
+    ] = False
+    host_kv_keep_pages: A[
+        int,
+        "Pages the runtime allocator keeps as the admission budget (keep_pages * page_size tokens); the remainder becomes the tier's staging reserve.",
+        NS("memory"),
+    ] = 1600
+    host_kv_hot_pages: A[
+        int,
+        "Pages (x page_size tokens) at the context tail never retired; 256 (16k tokens) absorbs one MTP iteration of selection drift.",
+        NS("memory"),
+    ] = 256
+    host_kv_prefetch: A[
+        bool,
+        "Asynchronously prefetch the neighbors of each restore's selections into reserve frames.",
+        NS("memory"),
+    ] = True
+    host_kv_prefetch_radius: A[
+        int,
+        "Neighbor radius (pages) for selection prefetch.",
+        NS("memory"),
+    ] = 1
+    host_kv_reserve_floor: A[
+        int,
+        "Reserve frames kept free for synchronous restores (prefetch stops above this floor).",
+        NS("memory"),
+    ] = 128
+    host_kv_verify_sample: A[
+        int,
+        "Bitwise-verify every Nth staged page against the host mirror (0 disables sampling checks; the first page is always verified).",
+        NS("memory"),
+    ] = 8
+    host_kv_stats_path: A[
+        Optional[str],
+        "Path for periodic tier counters/stats JSON (disabled when unset).",
+        NS("memory"),
+    ] = None
+
+    # -------------------------------------------------------------------------
     # Hierarchical cache
     # -------------------------------------------------------------------------
     enable_hierarchical_cache: A[bool, "Enable hierarchical cache", NS("memory")] = (

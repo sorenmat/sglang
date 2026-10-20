@@ -1,0 +1,17 @@
+{
+  "status": "P2.2 correctness-slice overlay; hooks are no-ops unless SGLANG_HOSTTIER_ENABLE=1",
+  "source_commit": "4ccff141dbe992794f9da6c3aa23535b4f72000d",
+  "original_sha256": {
+    "python/sglang/srt/layers/attention/qwen_sparse_attn_backend.py": "7cb54a4440a3f6f9619227138398c173993a9f8deec8e6a6be50ce9067d50153"
+  },
+  "overlay_sha256": {
+    "python/sglang/srt/layers/attention/qwen_sparse_attn_backend.py": "b8f9f788e9d6f578389ae8fe0bb9888975f7e6a21fdf5fd592e74f40ca4db4fd",
+    "python/sglang/srt/layers/attention/qsa/hosttier.py": "7272103eb527776d21f8cd0e0e9a372e13ffe3bac1cc7c0a75fe32700ee7f0c4",
+    "python/sglang/srt/layers/attention/qsa/hosttier23.py": "2177e53321102d43e5a769cf58fc6ec982ef05cd02b72b39021b243074ab036a",
+    "python/sglang/srt/layers/attention/qsa/hosttier23m.py": "c1359a2bdd6af7a60cda84b15fa7f79cf012e1a1fffe3383dc7131da8c4993d5"
+  },
+  "anchors": [
+    "_forward_paged_attention entry (decode/verify; the only hook)",
+    "module-bottom probe_install wrapping every entrypoint"
+  ]
+}

@@ -1,0 +1,664 @@
+{
+  "status": "synthetic CPU math check; no model quality or GPU speed measured",
+  "seed": 20260925,
+  "numpy_version": "2.4.6",
+  "packing_note": "CPU packed codec implemented for 4/6/8 bits; scoring uses decoded float64 arrays. Modeled GPU reads, not measured traffic; no GPU codec/kernel. Scale and radius cost 8 bytes per key.",
+  "checks": "48 adversarial/randomized configurations passed bounds and exact top-k",
+  "budget": {
+    "batch": 32,
+    "context": 262144,
+    "full_bf16_kv_GiB": 192.0,
+    "original_bf16_index_GiB": 6.0,
+    "eight_bit_index_with_fp32_scale_and_radius_GiB": 3.1875,
+    "bf16_hot_kv_5120_positions_per_request_GiB": 3.75,
+    "bf16_selected_kv_read_GB_per_accepted_wave_no_reuse": 1.612972032,
+    "bf16_selected_kv_read_GBps_at_80_no_reuse": 129.03776256,
+    "gdn_fp32_single_state_GiB": 3.375,
+    "routed_expert_params": 120795955200,
+    "routed_expert_NVFP4_with_scales_GiB": 63.28125,
+    "speculation_scenarios_NOT_measurements": [
+      {
+        "target_positions": 1,
+        "iid_conditional_acceptance_assumption": 1.0,
+        "expected_emitted_per_request_including_bonus": 1.0,
+        "expected_experts_per_layer_uniform_independent_assumption": 239.635715,
+        "routed_expert_GB_per_verify_pass": 31.802152,
+        "routed_expert_TBps_for_80_per_request": 2.544172
+      },
+      {
+        "target_positions": 4,
+        "iid_conditional_acceptance_assumption": 0.9,
+        "expected_emitted_per_request_including_bonus": 3.439,
+        "expected_experts_per_layer_uniform_independent_assumption": 470.999349,
+        "routed_expert_GB_per_verify_pass": 62.506512,
+        "routed_expert_TBps_for_80_per_request": 1.454063
+      },
+      {
+        "target_positions": 8,
+        "iid_conditional_acceptance_assumption": 0.9,
+        "expected_emitted_per_request_including_bonus": 5.695328,
+        "expected_experts_per_layer_uniform_independent_assumption": 508.716693,
+        "routed_expert_GB_per_verify_pass": 67.511996,
+        "routed_expert_TBps_for_80_per_request": 0.948314
+      },
+      {
+        "target_positions": 12,
+        "iid_conditional_acceptance_assumption": 0.9,
+        "expected_emitted_per_request_including_bonus": 7.175705,
+        "expected_experts_per_layer_uniform_independent_assumption": 511.737075,
+        "routed_expert_GB_per_verify_pass": 67.912832,
+        "routed_expert_TBps_for_80_per_request": 0.757142
+      },
+      {
+        "target_positions": 16,
+        "iid_conditional_acceptance_assumption": 0.9,
+        "expected_emitted_per_request_including_bonus": 8.14698,
+        "expected_experts_per_layer_uniform_independent_assumption": 511.978945,
+        "routed_expert_GB_per_verify_pass": 67.944931,
+        "routed_expert_TBps_for_80_per_request": 0.667191
+      }
+    ]
+  },
+  "synthetic_index_results": [
+    {
+      "case": "single_query",
+      "bits": 4,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.967422
+      ],
+      "refine_union_fraction": 0.967422,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16230656,
+      "ratio_to_one_shared_bf16_index_scan": 1.248672,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "single_query",
+      "bits": 4,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.652283
+      ],
+      "refine_union_fraction": 0.652283,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 10943488,
+      "ratio_to_one_shared_bf16_index_scan": 0.933533,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "single_query",
+      "bits": 6,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.091492
+      ],
+      "refine_union_fraction": 0.091492,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 1534976,
+      "ratio_to_one_shared_bf16_index_scan": 0.497742,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "single_query",
+      "bits": 6,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.036987
+      ],
+      "refine_union_fraction": 0.036987,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 620544,
+      "ratio_to_one_shared_bf16_index_scan": 0.443237,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "single_query",
+      "bits": 8,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.015991
+      ],
+      "refine_union_fraction": 0.015991,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 268288,
+      "ratio_to_one_shared_bf16_index_scan": 0.547241,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "single_query",
+      "bits": 8,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.01178
+      ],
+      "refine_union_fraction": 0.01178,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 197632,
+      "ratio_to_one_shared_bf16_index_scan": 0.54303,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 4,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.966736,
+        0.966766,
+        0.967514,
+        0.966766,
+        0.967453,
+        0.967346,
+        0.967819,
+        0.966614
+      ],
+      "refine_union_fraction": 0.969376,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16263424,
+      "ratio_to_one_shared_bf16_index_scan": 1.250626,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 4,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.651596,
+        0.651871,
+        0.652802,
+        0.651535,
+        0.6492,
+        0.653885,
+        0.651581,
+        0.650955
+      ],
+      "refine_union_fraction": 0.664169,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 11142912,
+      "ratio_to_one_shared_bf16_index_scan": 0.945419,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 6,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.090515,
+        0.090988,
+        0.091385,
+        0.091599,
+        0.091553,
+        0.091568,
+        0.0914,
+        0.091049
+      ],
+      "refine_union_fraction": 0.095795,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 1607168,
+      "ratio_to_one_shared_bf16_index_scan": 0.502045,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 6,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.037277,
+        0.036575,
+        0.037125,
+        0.036942,
+        0.036453,
+        0.036667,
+        0.036987,
+        0.036621
+      ],
+      "refine_union_fraction": 0.0392,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 657664,
+      "ratio_to_one_shared_bf16_index_scan": 0.44545,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 8,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.015854,
+        0.01593,
+        0.016113,
+        0.016129,
+        0.016083,
+        0.016052,
+        0.015778,
+        0.015884
+      ],
+      "refine_union_fraction": 0.017151,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 287744,
+      "ratio_to_one_shared_bf16_index_scan": 0.548401,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_queries_small_drift",
+      "bits": 8,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.011917,
+        0.01181,
+        0.011902,
+        0.01181,
+        0.011642,
+        0.011932,
+        0.011551,
+        0.011917
+      ],
+      "refine_union_fraction": 0.012863,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 215808,
+      "ratio_to_one_shared_bf16_index_scan": 0.544113,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 4,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.974091,
+        0.978745,
+        0.977554,
+        0.983978,
+        0.971268,
+        0.985703,
+        0.969894,
+        0.987061
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.28125,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 4,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.668747,
+        0.669983,
+        0.692551,
+        0.704102,
+        0.659592,
+        0.710876,
+        0.678452,
+        0.696777
+      ],
+      "refine_union_fraction": 0.999924,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16775936,
+      "ratio_to_one_shared_bf16_index_scan": 1.281174,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 6,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.097412,
+        0.101578,
+        0.106644,
+        0.112518,
+        0.09375,
+        0.116455,
+        0.10173,
+        0.107452
+      ],
+      "refine_union_fraction": 0.589661,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 9892864,
+      "ratio_to_one_shared_bf16_index_scan": 0.995911,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 6,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.037918,
+        0.037613,
+        0.039566,
+        0.03981,
+        0.036133,
+        0.040604,
+        0.037766,
+        0.038422
+      ],
+      "refine_union_fraction": 0.270523,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 4538624,
+      "ratio_to_one_shared_bf16_index_scan": 0.676773,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 8,
+      "bound_mode": "basic",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.016281,
+        0.016602,
+        0.017365,
+        0.0168,
+        0.015625,
+        0.018219,
+        0.015762,
+        0.016418
+      ],
+      "refine_union_fraction": 0.125854,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 2111488,
+      "ratio_to_one_shared_bf16_index_scan": 0.657104,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "eight_independent_queries",
+      "bits": 8,
+      "bound_mode": "joint",
+      "positions": 8,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.011841,
+        0.011978,
+        0.0121,
+        0.012054,
+        0.011276,
+        0.013168,
+        0.011353,
+        0.011673
+      ],
+      "refine_union_fraction": 0.091843,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 1540864,
+      "ratio_to_one_shared_bf16_index_scan": 0.623093,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 4,
+      "bound_mode": "basic",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.989883,
+        0.979385,
+        0.980606,
+        0.963837,
+        0.980042,
+        0.974304,
+        0.985245,
+        0.975342,
+        0.953552,
+        0.982529,
+        0.968201,
+        0.981766
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.28125,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 4,
+      "bound_mode": "joint",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.707916,
+        0.684616,
+        0.687195,
+        0.65799,
+        0.672897,
+        0.672043,
+        0.711975,
+        0.67421,
+        0.632172,
+        0.690155,
+        0.657654,
+        0.682236
+      ],
+      "refine_union_fraction": 0.999985,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16776960,
+      "ratio_to_one_shared_bf16_index_scan": 1.281235,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 6,
+      "bound_mode": "basic",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.120743,
+        0.104401,
+        0.104355,
+        0.090439,
+        0.101288,
+        0.09845,
+        0.114014,
+        0.099915,
+        0.08107,
+        0.106781,
+        0.093628,
+        0.100281
+      ],
+      "refine_union_fraction": 0.708862,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 11892736,
+      "ratio_to_one_shared_bf16_index_scan": 1.115112,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 6,
+      "bound_mode": "joint",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.039932,
+        0.037231,
+        0.037857,
+        0.037903,
+        0.038483,
+        0.037491,
+        0.039108,
+        0.038681,
+        0.035416,
+        0.039413,
+        0.039185,
+        0.035721
+      ],
+      "refine_union_fraction": 0.368286,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 6178816,
+      "ratio_to_one_shared_bf16_index_scan": 0.774536,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 8,
+      "bound_mode": "basic",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.017502,
+        0.016144,
+        0.016724,
+        0.016525,
+        0.017365,
+        0.016342,
+        0.017044,
+        0.016876,
+        0.015076,
+        0.017242,
+        0.017395,
+        0.0159
+      ],
+      "refine_union_fraction": 0.18251,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 3062016,
+      "ratio_to_one_shared_bf16_index_scan": 0.71376,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "twelve_independent_queries",
+      "bits": 8,
+      "bound_mode": "joint",
+      "positions": 12,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        0.012024,
+        0.011292,
+        0.011505,
+        0.012283,
+        0.012787,
+        0.0121,
+        0.011597,
+        0.012283,
+        0.011826,
+        0.012253,
+        0.01236,
+        0.011368
+      ],
+      "refine_union_fraction": 0.134415,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 2255104,
+      "ratio_to_one_shared_bf16_index_scan": 0.665665,
+      "fallback_if_more_bytes_than_full_scan": false
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 4,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.28125,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 4,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 4718592,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.28125,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 6,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.40625,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 6,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 6815744,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.40625,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 8,
+      "bound_mode": "basic",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.53125,
+      "fallback_if_more_bytes_than_full_scan": true
+    },
+    {
+      "case": "all_scores_tied",
+      "bits": 8,
+      "bound_mode": "joint",
+      "positions": 1,
+      "exact_topk_match": true,
+      "refine_fraction_per_position": [
+        1.0
+      ],
+      "refine_union_fraction": 1.0,
+      "packed_coarse_read_bytes": 8912896,
+      "original_key_read_bytes": 16777216,
+      "ratio_to_one_shared_bf16_index_scan": 1.53125,
+      "fallback_if_more_bytes_than_full_scan": true
+    }
+  ]
+}

@@ -1376,7 +1376,62 @@ class QwenSparseAttnBackend(AttentionBackend):
         slots = metadata.token_slot_table[sequence_ids[:, None], safe]
         return torch.where(valid, slots, torch.full_like(slots, -1)).to(torch.int32)
 
+    def _host_kv_pre(self, forward_batch, topk_indices) -> None:
+        """Host-KV tier pre-forward hook: restore selected retired pages.
+
+        No-op when the tier is disabled, unarmed, or a CUDA graph is
+        capturing (replays skip Python entirely; between-replay tiering
+        runs from the scheduler loop).
+        """
+        tier = getattr(self, "host_kv_tier", None)
+        if tier is None or not tier.cfg.enable:
+            return
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+        except Exception:
+            return
+        if not tier.armed:
+            rows = getattr(forward_batch, "req_pool_indices", None)
+            if rows is not None and rows.numel() > 0:
+                tier.arm(self, int(rows[0].item()))
+            if not tier.armed:
+                return
+        tier.before_gather(topk_indices, forward_batch)
+
+    def _host_kv_post(self, forward_batch, topk_indices) -> None:
+        """Host-KV tier post-forward hooks: coverage audit + mirror/retire."""
+        tier = getattr(self, "host_kv_tier", None)
+        if tier is None or not tier.cfg.enable or not tier.armed:
+            return
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+            tier.audit_coverage(topk_indices, forward_batch)
+            tier.after_write(forward_batch)
+        except Exception:
+            pass
+
     def forward_extend(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        layer,
+        forward_batch,
+        save_kv_cache: bool = True,
+        topk_indices: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        self._host_kv_pre(forward_batch, topk_indices)
+        try:
+            return self._forward_extend_impl(
+                q, k, v, layer, forward_batch, save_kv_cache,
+                topk_indices, **kwargs)
+        finally:
+            self._host_kv_post(forward_batch, topk_indices)
+
+    def _forward_extend_impl(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -1627,12 +1682,15 @@ class QwenSparseAttnBackend(AttentionBackend):
     ) -> torch.Tensor:
         if topk_indices is None:
             raise ValueError("QSA sparse attention requires topk_indices")
+        self._host_kv_pre(forward_batch, topk_indices)
         if save_kv_cache:
             self.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
         q = q.reshape(-1, layer.tp_q_head_num, layer.head_dim)
-        return self._forward_paged_attention(q, layer, forward_batch, topk_indices)
+        out = self._forward_paged_attention(q, layer, forward_batch, topk_indices)
+        self._host_kv_post(forward_batch, topk_indices)
+        return out
 
     def _forward_paged_attention(
         self,
