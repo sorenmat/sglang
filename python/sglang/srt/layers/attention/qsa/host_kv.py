@@ -803,6 +803,20 @@ class HostKVTier:
                 if st["ctx_written"] > 0:
                     self.rows.pop(row, None)
                 continue
+            # A finished request's stash slot keeps its LAST capture until
+            # the slot is reused - captured_len <= 1 never fires for it -
+            # and the tick would service the dead row forever. Healthy
+            # decoding rows update captured_len every iteration; frozen
+            # for this many ticks means the row is finished.
+            cur_len = int(lens[i].item())
+            if st.get("last_tick_len") == cur_len:
+                st["frozen_ticks"] = st.get("frozen_ticks", 0) + 1
+            else:
+                st["frozen_ticks"] = 0
+                st["last_tick_len"] = cur_len
+            if st["frozen_ticks"] > 128:
+                self.rows.pop(row, None)
+                continue
             pos = idx[i]
             sel = pos[pos >= 0]
             sel_set = set(torch.unique(sel // _PAGE).tolist())
