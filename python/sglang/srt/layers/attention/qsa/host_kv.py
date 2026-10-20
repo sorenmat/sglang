@@ -799,11 +799,17 @@ class HostKVTier:
             # or auditing against it drains the reserve into a dead row
             # and starves the live one (the N=4 native wedge: 2.4B
             # coverage misses, zero progress). Drop the dead state.
-            if int(lens[i].item()) <= 1:
+            cap_len = int(lens[i].item())
+            if cap_len <= 1:
                 # Not yet captured: warmup dummy or a request still in
                 # PREFILL (its first draft-extend capture comes only
-                # after prefill). Nothing to restore; row lifecycle is
-                # owned by forget_row at request finish.
+                # after prefill). Row lifecycle is owned by forget_row.
+                continue
+            if abs(cap_len - st["ctx_written"]) > 4 * _PAGE + 256:
+                # Stale capture on a recycled slot: the stash still
+                # holds the PREVIOUS request's selection while this row
+                # prefills a new one - restoring it services dead pages
+                # every iteration and wedges the loop.
                 continue
             pos = idx[i]
             sel = pos[pos >= 0]
