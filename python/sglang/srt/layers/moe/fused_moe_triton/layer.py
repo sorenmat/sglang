@@ -134,7 +134,19 @@ def _get_deepep_comm_group(a2a_backend):
     return group
 
 
-def create_moe_dispatcher(moe_runner_config: MoeRunnerConfig) -> BaseDispatcher:
+def _built_runner_backend(quant_method: FusedMoEMethodBase):
+    # The layer calls create_moe_runner before building its dispatcher, so the
+    # runner the quant method actually picked is known here. Methods that keep
+    # no runner of their own (including wrappers that build one on an inner
+    # scheme) return None and the dispatcher follows --moe-runner-backend.
+    runner = quant_method.runner
+    return None if runner is None else runner.runner_backend
+
+
+def create_moe_dispatcher(
+    moe_runner_config: MoeRunnerConfig,
+    quant_method: FusedMoEMethodBase,
+) -> BaseDispatcher:
     a2a_backend = get_moe_a2a_backend()
     if a2a_backend.is_none() and is_npu():
         return AscendTPDispatcher(moe_runner_config)
@@ -146,7 +158,11 @@ def create_moe_dispatcher(moe_runner_config: MoeRunnerConfig) -> BaseDispatcher:
         # ascend_fuseep bypasses the dispatcher abstraction (see
         # forward_fuseep in hardware_backend/npu/moe/fuseep.py); a
         # StandardDispatcher is created but never invoked.
-        return StandardDispatcher(moe_runner_config)
+        # flashinfer_megamoe does its EP all-to-all inside the kernel, so the
+        # dispatcher stays a pure noop passthrough.
+        return StandardDispatcher(
+            moe_runner_config, runner_backend=_built_runner_backend(quant_method)
+        )
     elif (
         a2a_backend.is_deepep()
         or a2a_backend.is_mooncake()
@@ -415,7 +431,9 @@ class FusedMoE(torch.nn.Module):
         )
 
         self.quant_method.create_moe_runner(self, self.moe_runner_config)
-        self.dispatcher = create_moe_dispatcher(self.moe_runner_config)
+        self.dispatcher = create_moe_dispatcher(
+            self.moe_runner_config, self.quant_method
+        )
         # Dispatchers are not nn.Modules, so they cannot register their own
         # buffers; the AITER expert mask would not survive a memory-saver resume.
         expert_mask = getattr(self.dispatcher, "expert_mask_gpu", None)
