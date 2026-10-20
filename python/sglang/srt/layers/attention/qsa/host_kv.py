@@ -221,7 +221,9 @@ class HostKVTier:
         allocator.free_pages = free[:keep].clone()
         self.sink_page = int(self.reserve[0].item())
         self.reserve_tokens = int(self.reserve.numel()) * _PAGE
-        self.tier_frames = set(self.reserve.tolist())
+        # + page 0 (the padding page): retired columns read as zeros and
+        # the finish path would otherwise "free" page 0 into circulation.
+        self.tier_frames = set(self.reserve.tolist()) | {0}
         self._orig_size = allocator.size
         allocator.size = keep * _PAGE
         if hasattr(allocator, "full_tokens_per_layer"):
@@ -339,12 +341,12 @@ class HostKVTier:
             lo = 0
             for i, row_id in enumerate(rows.tolist()):
                 hi = int(min(bounds[i], flat.numel()))
-                st = self.rows.get(int(row_id))
+                st = self._row_state(int(row_id))
                 if st is not None and hi > lo:
                     self._restore_row_pages(int(row_id), st, flat[lo:hi])
                 lo = hi
             return
-        st = self.rows.get(int(rows[0].item()))
+        st = self._row_state(int(rows[0].item()))
         if st is not None:
             self._restore_row_pages(int(rows[0].item()), st, positions)
 
@@ -382,14 +384,14 @@ class HostKVTier:
             lo = 0
             for i, row_id in enumerate(rows.tolist()):
                 hi = int(min(bounds[i], out_locs.numel()))
-                st = self.rows.get(int(row_id))
+                st = self._row_state(int(row_id))
                 if st is not None and hi > lo:
                     self._write_row(int(row_id), st, out_locs[lo:hi],
                                     total_ctx=_total(i))
                 lo = hi
         else:
             row = int(rows[0].item())
-            st = self.rows.get(row)
+            st = self._row_state(row)
             if st is not None:
                 self._write_row(row, st, out_locs, total_ctx=_total(0))
         self._maybe_dump_stats()
@@ -417,12 +419,12 @@ class HostKVTier:
             lo = 0
             for i, row_id in enumerate(rows.tolist()):
                 hi = int(min(bounds[i], flat.numel()))
-                st = self.rows.get(int(row_id))
+                st = self._row_state(int(row_id))
                 if st is not None and hi > lo:
                     self._audit_row(int(row_id), st, flat[lo:hi])
                 lo = hi
         else:
-            st = self.rows.get(int(rows[0].item()))
+            st = self._row_state(int(rows[0].item()))
             if st is not None:
                 self._audit_row(int(rows[0].item()), st, positions)
 

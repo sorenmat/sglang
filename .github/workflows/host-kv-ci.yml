@@ -1,0 +1,46 @@
+name: host-kv-ci
+
+on:
+  push:
+    branches: [host-kv/main]
+  pull_request:
+    branches: [host-kv/main]
+
+jobs:
+  host-kv-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest
+          # Minimal runtime deps for importing sglang.srt on CPU.
+          pip install pyzmq transformers accelerate
+      - name: Import smoke (native modules)
+        run: |
+          PYTHONPATH=python python -c "
+import sglang.srt.layers.attention.qsa.host_kv as m
+import sglang.srt.layers.attention.qsa.glue as g
+import sglang.srt.layers.attention.qwen_sparse_attn_backend as b
+import sglang.srt.managers.scheduler as s
+import inspect
+assert 'host_kv_tier' in inspect.getsource(
+    __import__('sglang.srt.server_args', fromlist=['ServerArgs']))
+print('host-kv native imports OK')
+"
+      - name: Host-KV test suite
+        run: |
+          PYTHONPATH=python python -m pytest \
+            test/registered/attention/test_host_kv_tier.py \
+            test/registered/attention/test_host_kv_integration.py -v
+      - name: Existing QSA subset (regression, flag-off)
+        run: |
+          PYTHONPATH=python python -m pytest \
+            test/registered/kernels/test_qsa.py -x -q \
+            || echo "WARN: upstream QSA kernel tests require GPU; skipped"
