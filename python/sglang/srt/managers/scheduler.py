@@ -2203,6 +2203,8 @@ class Scheduler(
             output_streamer=self.output_streamer,
             abort_request=self.abort_request,
         )
+        # Host-KV tier handle for request-finish cleanup (forget_row).
+        self.batch_result_processor.host_kv_tier = self.host_kv_tier
 
     def init_req_max_new_tokens(self, req):
         input_len = len(req.origin_input_ids)
