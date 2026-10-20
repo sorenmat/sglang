@@ -860,8 +860,41 @@ class HostKVTier:
         live request mid-prefill ALSO reads captured_len==1 (capture
         happens at the first draft-extend, after prefill), so the tick
         was deleting live rows every iteration and exploding starvation
-        (406k starved restores on a single prefiling request)."""
-        if self.rows.pop(row, None) is not None and self.cfg.stats_path:
+        (406k starved restores on a single prefiling request).
+
+        Every live page holds a RESERVE frame (restored or prefetched);
+        dropping state without returning them leaks the reserve - across
+        sequential requests the pool drained empty and later requests
+        starved every restore (1.39B starved at N=8). Return all live
+        frames before dropping the row."""
+        st = self.rows.pop(row, None)
+        if st is None:
+            return
+        frames = []
+        table = self.table
+        for page in list(st.get("restored", set())) + list(
+                st.get("prefetched", set())):
+            slots = st["page_slots"].get(page)
+            if slots is None or int(slots.numel()) == 0:
+                continue
+            frames.append(int(slots[0].item()) // _PAGE)
+            if page in st.get("restored", set()):
+                cols = torch.arange(page * _PAGE, (page + 1) * _PAGE,
+                                    device=table.device)
+                with torch.no_grad():
+                    table[row, cols] = 0
+        if frames and self.reserve is not None:
+            self.reserve = torch.cat([
+                self.reserve,
+                torch.tensor(sorted(set(frames)),
+                             dtype=self.reserve.dtype,
+                             device=self.reserve.device)])
+            self.reserve_tokens = int(self.reserve.numel()) * _PAGE
+        self.counters["forgotten_rows"] = \
+            self.counters.get("forgotten_rows", 0) + 1
+        self.counters["reclaimed_frames"] = \
+            self.counters.get("reclaimed_frames", 0) + len(set(frames))
+        if self.cfg.stats_path:
             self.dump_stats()
 
     def scheduler_tick(self, model_worker: Any) -> None:
