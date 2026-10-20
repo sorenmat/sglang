@@ -1,23 +1,14 @@
 # Host-KV sglang: built from the host-kv/main branch (pinned at the
 # 4ccff141db lineage, the only one with QSA/Qwen3.8-Flash-Next).
-# Produces ONE image serving both modes:
-#   MODE=vanilla: stock behavior (flag off) - the A/B baseline
-#   MODE=tier:    --host-kv-tier and friends enabled
-FROM lmsysorg/sglang:dev-qwen38-next-local AS build
-
-# Replace the python tree with the branch's (the base image's tree is the
-# same lineage; this applies the host-kv commits).
+# The base image runs sglang as an editable install of
+# /sgl-workspace/sglang/python - replacing the tree IS the install
+# (this is exactly what the validated bind-mount experiments did).
+# ONE image serves both modes: MODE=vanilla (flag off, stock behavior)
+# and MODE=tier (see launch-hostkv.sh).
+FROM lmsysorg/sglang:dev-qwen38-next-local
 COPY python /sgl-workspace/sglang/python
 COPY test /sgl-workspace/sglang/test
-
-# Reinstall so entrypoints/metadata reflect the branch tree.
-RUN cd /sgl-workspace/sglang/python && pip install --no-deps -e . \
-    && python -c "import sglang.srt.layers.attention.qsa.host_kv; print('host_kv OK')"
-
-FROM lmsysorg/sglang:dev-qwen38-next-local
-COPY --from=build /sgl-workspace/sglang /sgl-workspace/sglang
-COPY --from=build /usr/local/lib/python3.12/site-packages/__editable__* \
-     /usr/local/lib/python3.12/site-packages/
-COPY --from=build /usr/local/lib/python3.12/site-packages/sglang* \
-     /usr/local/lib/python3.12/site-packages/
-WORKDIR /sgl-workspace/sglang
+RUN python -c "import sglang.srt.layers.attention.qsa.host_kv as m; \
+import sglang.srt.layers.attention.qsa.glue as g; \
+assert hasattr(g, 'resolve_selection_stash'); \
+print('hostkv image OK:', m.HostKVTier.__name__)"
