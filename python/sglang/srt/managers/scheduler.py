@@ -1037,7 +1037,7 @@ class Scheduler(
                     HostKVConfig, HostKVTier,
                 )
                 self.host_kv_tier = HostKVTier(
-                    HostKVConfig.from_server_args(server_args))
+                    HostKVConfig.from_server_args(self.server_args))
                 self.host_kv_tier._scheduler = self
                 self.host_kv_tier.attach_to_backends(self.tp_worker)
             except Exception as e:
