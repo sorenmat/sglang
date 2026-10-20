@@ -1795,8 +1795,11 @@ class Scheduler(
             if self.host_kv_tier is not None:
                 try:
                     self.host_kv_tier.scheduler_tick(self.model_worker)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if not getattr(self, "_hkv_tick_err_logged", False):
+                        self._hkv_tick_err_logged = True
+                        logger.warning(f"host-kv tick exception: {e!r}",
+                                       exc_info=True)
             if self._engine_paused:
                 continue
 

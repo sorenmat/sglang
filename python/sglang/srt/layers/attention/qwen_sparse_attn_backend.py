@@ -1409,8 +1409,12 @@ class QwenSparseAttnBackend(AttentionBackend):
                 return
             tier.audit_coverage(topk_indices, forward_batch)
             tier.after_write(forward_batch)
-        except Exception:
-            pass
+        except Exception as e:
+            if not getattr(self, "_hkv_post_err_logged", False):
+                self._hkv_post_err_logged = True
+                print(f"[host-kv] post-hook exception: {e!r}", flush=True)
+                import traceback
+                traceback.print_exc()
 
     def forward_extend(
         self,
