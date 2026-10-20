@@ -793,6 +793,16 @@ class HostKVTier:
             return
         for i, row in enumerate(rows):
             st = self.rows[row]
+            # QSAMTPSharedSparseIndices initializes captured_len to ONES:
+            # a row reading <= 1 is recycled or never captured. Its stash
+            # slot may already hold ANOTHER request's selection; restoring
+            # or auditing against it drains the reserve into a dead row
+            # and starves the live one (the N=4 native wedge: 2.4B
+            # coverage misses, zero progress). Drop the dead state.
+            if int(lens[i].item()) <= 1:
+                if st["ctx_written"] > 0:
+                    self.rows.pop(row, None)
+                continue
             pos = idx[i]
             sel = pos[pos >= 0]
             sel_set = set(torch.unique(sel // _PAGE).tolist())
