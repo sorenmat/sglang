@@ -1062,6 +1062,18 @@ class PrefillAdder:
             else:
                 self.tree_cache.dec_lock_ref(last_node)
 
+    _ADMIT_LOGS = {"n": 0}
+
+    @staticmethod
+    def _admit_log(msg):
+        import os
+        if os.environ.get("SGLANG_HOSTKV_ADMIT_LOG", "") != "1":
+            return
+        if PrefillAdder._ADMIT_LOGS["n"] < 80:
+            PrefillAdder._ADMIT_LOGS["n"] += 1
+            print(f"[admit #{PrefillAdder._ADMIT_LOGS['n']}] {msg}",
+                  flush=True)
+
     def add_one_req_ignore_eos(self, req: Req):
         cand_extend_input_len = len(req.full_untruncated_fill_ids) - len(
             req.prefix_indices
@@ -1071,6 +1083,10 @@ class PrefillAdder:
         # budget gate so admission can't over-commit (0 for baseline / non-Mamba).
         paged_input += self._mamba_gap_budget_for_req(req)
         if paged_input > min(self.cur_rem_tokens, self.rem_total_tokens):
+            self._admit_log(
+                f"ieos NO_TOKEN paged={paged_input} cur={self.cur_rem_tokens} "
+                f"rem_total={self.rem_total_tokens} "
+                f"running={self.running_batch.batch_size() if self.running_batch else 0}")
             return AddReqResult.NO_TOKEN
         if self.is_hybrid_swa:
             if (
@@ -1127,6 +1143,10 @@ class PrefillAdder:
                 min_free_tokens = cur_rem_tokens + tokens_freed - tokens_left * bs
                 # reserve tokens for corner cases
                 if min_free_tokens <= IGNORE_EOS_RESERVE_TOKENS * bs:
+                    self._admit_log(
+                        f"ieos RESERVE paged={paged_input} bs={bs} "
+                        f"tokens_left={tokens_left} min_free={min_free_tokens} "
+                        f"cur={self.cur_rem_tokens}")
                     return AddReqResult.NO_TOKEN
                 tokens_freed += tokens_occupied
 
