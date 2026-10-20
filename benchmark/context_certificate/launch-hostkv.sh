@@ -39,5 +39,6 @@ sudo -n docker run -d --name "$NAME" --runtime nvidia \
   --context-length 262144 --max-total-tokens 200000 --max-running-requests 16 \
   --disable-radix-cache --schedule-conservativeness 1.5 \
   --mem-fraction-static 0.95 --enable-metrics \
+  ${TIER_FLAGS[@]+"${TIER_FLAGS[@]}"} \
   --host 0.0.0.0 --port 30000 >/dev/null
 echo "$NAME launched (gpu=$GPU port=$PORT mode=$MODE keep=$KEEP)"
