@@ -1008,8 +1008,7 @@ class PrefillAdder:
             # The chunked_req must be added to the list; otherwise, it will cause a memory leak.
             self._admit_log(
                 f"chunked rem={_rem_tokens} chunk={self.rem_chunk_tokens} "
-                f"rem_total={self.rem_total_tokens} cur={self.cur_rem_tokens} "
-                f"cand={cand_extend_input_len}")
+                f"rem_total={self.rem_total_tokens} cur={self.cur_rem_tokens}")
             # Therefore, in certain cases where _rem_tokens <= 0, it should be replaced with rem_chunk_tokens.
             if _rem_tokens <= 0:
                 if self.is_hybrid_swa:
