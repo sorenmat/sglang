@@ -164,17 +164,17 @@ def main():
     session = 0
 
     for rep in range(args.repeat):
-        for ctx in ctxs:
-            for n in ladder:
-                for mode in modes:
-                    name = f"ab-{mode}"
-                    launch(args.server_script, args.gpu, args.port,
-                           name, mode, ctx == "160k", None)
-                    time.sleep(5)
+        for mode in modes:
+            for ctx in ctxs:
+                name = f"ab-{mode}"
+                launch(args.server_script, args.gpu, args.port,
+                       name, mode, ctx == "160k", None)
+                time.sleep(5)
+                for n in ladder:
                     cell = run_cell(args.port, n, ctx, session)
                     session += n
                     cell.update(mode=mode, n=n, ctx=ctx, rep=rep,
-                                decode_bins=scrape_decode_bins(name),
+                                decode_bins=scrape_decode_bins(name, 8),
                                 tier_stats=tier_stats(name))
                     cells.append(cell)
                     print(json.dumps(
@@ -182,9 +182,10 @@ def main():
                          "wall": cell["wall"],
                          "ok": sum(1 for r in cell["results"]
                                    if "error" not in r)}), flush=True)
-                    subprocess.run(["sudo", "-n", "docker", "rm", "-f",
-                                    name], capture_output=True)
-                    time.sleep(30)  # cool-down
+                    time.sleep(30)  # cool-down between cells
+                subprocess.run(["sudo", "-n", "docker", "rm", "-f",
+                                name], capture_output=True)
+                time.sleep(15)
 
     # Cross-mode logprob comparison per (ctx, n).
     quality = []
