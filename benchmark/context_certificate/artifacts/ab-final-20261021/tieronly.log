@@ -1,0 +1,5 @@
+{"mode": "tier", "n": 1, "ctx": "101k", "wall": 30.7, "ok": 1}
+{"mode": "tier", "n": 4, "ctx": "101k", "wall": 76.1, "ok": 4}
+{"mode": "tier", "n": 8, "ctx": "101k", "wall": 149.4, "ok": 8}
+/home/runner/tieronly.sh: line 7:  5235 Killed                  python3 ab_bench/run_matrix.py --gpu 0 --port 30030 --out /home/runner/ab-tier-only --ladder 1,4,8,32 --ctx 101k --modes tier --repeat 1
+TIER-DONE
