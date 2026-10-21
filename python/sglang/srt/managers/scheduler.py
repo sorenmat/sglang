@@ -1040,6 +1040,10 @@ class Scheduler(
                     HostKVConfig.from_server_args(self.server_args))
                 self.host_kv_tier._scheduler = self
                 self.host_kv_tier.attach_to_backends(self.tp_worker)
+                from sglang.srt.mem_cache.common import (
+                    _HOST_KV_FORGET_HOOKS,
+                )
+                _HOST_KV_FORGET_HOOKS.append(self.host_kv_tier.forget_row)
             except Exception as e:
                 logger.warning(f"host-kv tier init failed: {e!r}")
                 self.host_kv_tier = None
@@ -1792,7 +1796,9 @@ class Scheduler(
             # Host-KV between-replay tick: the previous CUDA graph replay
             # has finished; restore stashed selections and re-retire,
             # entirely outside any captured region.
-            if self.host_kv_tier is not None:
+            if (self.host_kv_tier is not None
+                    and getattr(self, "_hkv_tick_due", False)):
+                self._hkv_tick_due = False
                 try:
                     self.host_kv_tier.scheduler_tick(self.model_worker)
                 except Exception as e:
@@ -2202,8 +2208,6 @@ class Scheduler(
             ),
             output_streamer=self.output_streamer,
             abort_request=self.abort_request,
-            # Host-KV tier handle for request-finish cleanup (forget_row).
-            host_kv_tier=self.host_kv_tier,
         )
 
     def init_req_max_new_tokens(self, req):
@@ -3662,6 +3666,12 @@ class Scheduler(
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> Union[GenerationBatchResult, EmbeddingBatchResult]:
         """Run a batch."""
+        if (self.host_kv_tier is not None
+                and (batch.forward_mode.is_decode()
+                     or batch.forward_mode.is_target_verify())):
+            # A decode/verify forward just ran (or is about to); the
+            # between-replay tier tick is due before the next one.
+            self._hkv_tick_due = True
         self.forward_ct += 1
         batch.forward_iter = self.forward_ct
         batch.launch_ts = time.monotonic()

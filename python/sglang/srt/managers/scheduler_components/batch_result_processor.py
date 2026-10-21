@@ -93,7 +93,6 @@ class SchedulerBatchResultProcessor:
     logprob_result_processor: SchedulerLogprobResultProcessor
     output_streamer: SchedulerOutputStreamer
     abort_request: Callable
-    host_kv_tier: Optional[object] = None
 
     def process_batch_result_prebuilt(self, batch: ScheduleBatch):
         assert self.disaggregation_mode == DisaggregationMode.DECODE
@@ -107,9 +106,6 @@ class SchedulerBatchResultProcessor:
                 req.time_stats.set_quick_finish_time()
                 if get_memory().enable_hisparse:
                     self.hisparse_coordinator.request_finished(req)
-                _hkv = getattr(self, 'host_kv_tier', None)
-                if _hkv is not None and req.req_pool_idx is not None:
-                    _hkv.forget_row(int(req.req_pool_idx))
                 release_kv_cache(req, self.tree_cache)
 
         # Note: Logprobs should be handled on the prefill engine.
@@ -278,9 +274,6 @@ class SchedulerBatchResultProcessor:
                     if req.finished():
                         self._maybe_collect_routed_experts(req)
                         self._maybe_collect_indexer_topk(req)
-                        _hkv = getattr(self, 'host_kv_tier', None)
-                        if _hkv is not None and req.req_pool_idx is not None:
-                            _hkv.forget_row(int(req.req_pool_idx))
                         release_kv_cache(req, self.tree_cache)
                         req.time_stats.set_completion_time()
                     elif not batch.decoding_reqs or req not in batch.decoding_reqs:
@@ -360,9 +353,6 @@ class SchedulerBatchResultProcessor:
                     req.update_finish_state()
 
                     if req.finished():
-                        _hkv = getattr(self, 'host_kv_tier', None)
-                        if _hkv is not None and req.req_pool_idx is not None:
-                            _hkv.forget_row(int(req.req_pool_idx))
                         release_kv_cache(req, self.tree_cache)
                         req.time_stats.set_completion_time()
                     else:

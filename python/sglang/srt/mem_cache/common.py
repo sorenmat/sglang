@@ -192,7 +192,20 @@ def retraction_discard(req: Req, tree_cache: BasePrefixCache, backend: str) -> N
     req.retraction_backup = None
 
 
+# Host-KV tier request-finish hooks: called at the single release
+# choke point, BEFORE req_pool_idx is invalidated. Site-specific hooks
+# in callers proved fragile (three call sites, none reached under
+# overlap+spec in practice - finished rows were serviced forever).
+_HOST_KV_FORGET_HOOKS = []
+
+
 def release_kv_cache(req: Req, tree_cache: BasePrefixCache, is_insert: bool = True):
+    if _HOST_KV_FORGET_HOOKS and req.req_pool_idx is not None:
+        for _hook in _HOST_KV_FORGET_HOOKS:
+            try:
+                _hook(int(req.req_pool_idx))
+            except Exception:
+                pass
     # the two resources currently have the same lifecycle, thus simplify logic below
     assert (req.req_pool_idx is None) == (req.kv is None)
     # MambaRadixCache may alloc mamba state before alloc KV cache
