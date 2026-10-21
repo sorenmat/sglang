@@ -61,7 +61,7 @@ def launch(server_script, gpu, port, name, mode, ctx160k, log):
                        capture_output=True)
     res = subprocess.run(
         ["bash", server_script, str(gpu), str(port), name, mode,
-         "1600", "1" if ctx160k else "0"],
+         "1700", "1" if ctx160k else "0"],
         capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"launch failed: {res.stderr[-400:]}")
