@@ -1257,6 +1257,10 @@ class PrefillAdder:
         prefix_len = len(req.prefix_indices)
 
         if total_tokens >= self.rem_total_tokens:
+            self._admit_log(
+                f"NO_TOKEN total={total_tokens} rem_total={self.rem_total_tokens} "
+                f"cur={self.cur_rem_tokens} running="
+                f"{self.running_batch.batch_size() if self.running_batch else 0}")
             return AddReqResult.NO_TOKEN
 
         chunk_tokens_limit = self.rem_chunk_tokens
