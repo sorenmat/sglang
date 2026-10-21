@@ -137,6 +137,7 @@ class HostKVTier:
             "ff_dropped_reserve": 0, "br_ticks": 0, "br_errors": 0,
             "ws_sum": 0, "ws_n": 0, "drift_sum": 0, "drift_n": 0,
             "miss_recent": 0, "miss_deep": 0,
+            "forgotten_rows": 0, "runtime_frames_returned": 0,
         }
         self.selfcheck: Optional[Dict[str, Any]] = None
         self._stream: Any = None
@@ -546,9 +547,15 @@ class HostKVTier:
         if to_reserve and self.reserve is not None:
             self.reserve = torch.cat([
                 self.reserve,
-                torch.tensor(to_reserve, dtype=self.reserve.dtype,
+                torch.tensor(sorted(set(to_reserve)),
+                             dtype=self.reserve.dtype,
                              device=self.reserve.device)])
             self.reserve_tokens = int(self.reserve.numel()) * _PAGE
+            # Ownership is closed: every frame entering the reserve is
+            # tier-owned from then on, whatever its origin (the static
+            # confiscation snapshot missed recycled entries and let
+            # mis-routed frames cascade between the two ledgers).
+            self.tier_frames.update(to_reserve)
         if to_free_cols:
             all_slots = torch.cat(to_free_cols)
             self._dedup_free(all_slots)
@@ -889,17 +896,37 @@ class HostKVTier:
                                     device=table.device)
                 with torch.no_grad():
                     table[row, cols] = 0
-        if frames and self.reserve is not None:
+        tier_origin, runtime_origin = [], []
+        reserve_now = self._reserve_frames()
+        for frame in set(frames):
+            if frame in self.tier_frames or frame in reserve_now:
+                tier_origin.append(frame)
+            else:
+                runtime_origin.append(frame)
+        if tier_origin and self.reserve is not None:
             self.reserve = torch.cat([
                 self.reserve,
-                torch.tensor(sorted(set(frames)),
+                torch.tensor(sorted(tier_origin),
                              dtype=self.reserve.dtype,
                              device=self.reserve.device)])
             self.reserve_tokens = int(self.reserve.numel()) * _PAGE
+            self.tier_frames.update(tier_origin)
+        if runtime_origin:
+            # Frames that reached page_slots without tier provenance
+            # belong to the allocator; returning them to the reserve
+            # would double-own them (the 610-frames-per-request churn).
+            slots = torch.tensor(
+                [f * _PAGE for f in sorted(runtime_origin)],
+                dtype=self.allocator.free_pages.dtype,
+                device=self.allocator.free_pages.device)
+            self._dedup_free(slots)
         self.counters["forgotten_rows"] = \
             self.counters.get("forgotten_rows", 0) + 1
         self.counters["reclaimed_frames"] = \
-            self.counters.get("reclaimed_frames", 0) + len(set(frames))
+            self.counters.get("reclaimed_frames", 0) + len(tier_origin)
+        self.counters["runtime_frames_returned"] = \
+            self.counters.get("runtime_frames_returned", 0) \
+            + len(runtime_origin)
         if self.cfg.stats_path:
             self.dump_stats()
 

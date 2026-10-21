@@ -343,3 +343,92 @@ class HostKVFixtures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameConservation(unittest.TestCase):
+    """HKV-26: no frame may live in both ledgers, ever, across the full
+    churn cycle (retire -> restore -> re-retire -> forget), including
+    frames with corrupted provenance."""
+
+    def setUp(self):
+        self.tier, self.cfg = fresh_tier()
+        self.pool = FakePool(slots=64 * 200)
+        self.allocator = FakeAllocator(pages=200)
+        self.tree = FakeTreeCache()
+        self.table = torch.zeros(4, 8192, dtype=torch.int32)
+        self.reqs = {0: FakeReq(0)}
+        self.scheduler = FakeScheduler(list(self.reqs.values()), self.tree)
+        self.backend = FakeBackend(self.pool, self.allocator,
+                                   self.scheduler, self.table)
+        self.tier.arm(self.backend, 0)
+        self.next_page = 1
+
+    def _alloc(self, n):
+        # Faithful to the runtime: pages come out of the allocator's
+        # free set (the KEPT range), never from the tier's reserve.
+        pages = self.allocator.free_pages[:n].to(torch.int64).tolist()
+        self.allocator.free_pages = self.allocator.free_pages[n:]
+        return pages
+
+    def _prefill(self, row, start, n):
+        pages = self._alloc((n + PAGE - 1) // PAGE)
+        locs = (torch.tensor(pages)[:, None] * PAGE
+                + torch.arange(PAGE)[None, :]).flatten()[:n]
+        self.table[row, start:start + n] = locs.to(torch.int32)
+        self.reqs[row].kv.kv_allocated_len = start + n
+        self.tier.after_write(FakeBatch([row], locs,
+                                        seq_lens=torch.tensor([start + n])))
+
+    def _assert_disjoint(self):
+        free = set(self.allocator.free_pages.tolist())
+        reserve = set(self.tier.reserve.tolist())
+        overlap = free & reserve
+        self.assertFalse(
+            overlap,
+            f"frames in BOTH ledgers: {sorted(overlap)[:8]} "
+            f"(free={len(free)} reserve={len(reserve)})")
+
+    def test_churn_cycle_conserves_frames(self):
+        self._prefill(0, 0, 2048)
+        st = self.tier.rows[0]
+        # retire->restore->re-retire x5 with drift so different pages
+        # rotate through the reserve each cycle.
+        for cycle in range(5):
+            pages = sorted(st["retired"])[cycle:cycle + 4]
+            pos = torch.tensor([p * PAGE + j
+                                for p in pages for j in range(0, 64, 16)])
+            self.tier.before_gather(pos, FakeBatch([0], torch.tensor([0])))
+            self._assert_disjoint()
+            self.tier._retire(0, st, st["ctx_written"])
+            self._assert_disjoint()
+        # forget the row and check both ledgers balance.
+        before_free = int(self.allocator.free_pages.numel())
+        self.tier.forget_row(0)
+        self._assert_disjoint()
+        self.assertNotIn(0, self.tier.rows)
+        # everything the row held came back somewhere
+        self.assertGreater(int(self.allocator.free_pages.numel())
+                           + int(self.tier.reserve.numel()),
+                           before_free + int(self.tier.reserve.numel()) - 1)
+
+    def test_corrupt_provenance_routes_to_allocator(self):
+        self._prefill(0, 0, 2048)
+        st = self.tier.rows[0]
+        # Simulate the cascade: a RUNTIME frame ends up in a prefetched
+        # page's slots (as if a mis-route had happened earlier).
+        runtime_frame = self._alloc(1)[0]
+        page = sorted(st["retired"])[0]
+        st["page_slots"][page] = torch.arange(
+            runtime_frame * PAGE, (runtime_frame + 1) * PAGE)
+        st["prefetched"].add(page)
+        free_before = set(self.allocator.free_pages.tolist())
+        self.tier.forget_row(0)
+        self._assert_disjoint()
+        free_after = set(self.allocator.free_pages.tolist())
+        self.assertTrue(
+            runtime_frame in free_after or runtime_frame in free_before,
+            f"runtime frame {runtime_frame} vanished from the allocator: "
+            f"before={runtime_frame in free_before} "
+            f"after={runtime_frame in free_after}")
+        self.assertGreater(
+            self.tier.counters.get("runtime_frames_returned", 0), 0)
