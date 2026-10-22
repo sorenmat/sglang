@@ -1,0 +1,6 @@
+N= 32 logprobs= True [(38.9, 512, 'length'), (75.5, 512, 'length'), (51.1, 512, 'length'), (63.7, 512, 'length'), (14.3, 512, 'length'), (27.0, 512, 'length'), (88.3, 512, 'length'), (100.4, 512, 'length'), (126.3, 512, 'length'), (113.2, 512, 'length'), (163.7, 512, 'length'), (201.2, 512, 'length'), (138.6, 512, 'length'), (175.5, 512, 'length'), (188.5, 512, 'length'), (151.7, 512, 'length'), (226.3, 512, 'length'), (213.6, 512, 'length'), (252.2, 512, 'length'), (238.8, 512, 'length'), (315.2, 512, 'length'), (264.7, 512, 'length'), (276.8, 512, 'length'), (352.1, 512, 'length'), (289.6, 512, 'length'), (327.2, 512, 'length'), (339.1, 512, 'length'), (301.6, 512, 'length'), (377.8, 512, 'length'), (365.0, 512, 'length'), (403.8, 512, 'length'), (390.9, 512, 'length')]
+N32-FINAL-DONE
+forgotten_rows 33
+coverage_misses 132
+restore_starved 0
+verify_mismatches 0

@@ -1,0 +1,9 @@
+{"mode": "vanilla", "n": 1, "ctx": "101k", "wall": 22.7, "ok": 1}
+{"mode": "vanilla", "n": 4, "ctx": "101k", "wall": 55.5, "ok": 4}
+{"mode": "vanilla", "n": 8, "ctx": "101k", "wall": 113.6, "ok": 8}
+{"mode": "vanilla", "n": 32, "ctx": "101k", "wall": 458.2, "ok": 32}
+{"mode": "tier", "n": 1, "ctx": "101k", "wall": 28.0, "ok": 1}
+{"mode": "tier", "n": 4, "ctx": "101k", "wall": 60.4, "ok": 4}
+{"mode": "tier", "n": 8, "ctx": "101k", "wall": 124.4, "ok": 8}
+/home/runner/final-matrix.sh: line 7:  6965 Killed                  python3 ab_bench/run_matrix.py --gpu 0 --port 30030 --out /home/runner/ab-final --ladder 1,4,8,32 --ctx 101k --modes vanilla,tier --repeat 1
+FINAL-MATRIX-DONE
