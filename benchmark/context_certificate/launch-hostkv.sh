@@ -16,6 +16,7 @@ sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
 mkdir -p "$W/work/$NAME"
 
 TIER_FLAGS=()
+KEEP="${KEEP:-1600}"
 if [ "$MODE" = "tier" ] || [ "$MODE" = "auto" ]; then
   if [ "$CTX160K" = "1" ] && [ "$KEEP" = "1600" ]; then KEEP=2510; fi
   TIER_FLAGS=(--host-kv-tier
