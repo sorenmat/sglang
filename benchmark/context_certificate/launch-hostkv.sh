@@ -4,14 +4,20 @@
 set -euo pipefail
 GPU="${1:-0}"; PORT="${2:-30030}"; NAME="${3:-diag}"; MODE="${4:-tier}"
 KEEP="${5:-1600}"; CTX160K="${6:-0}"
+# Pool geometry overrides (256k probe: MAX_TOTAL_TOKENS=300000 KEEP=4100)
+MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-200000}"
+CTX_LEN="${CTX_LEN:-262144}"
+# AUTO mode: identical to tier but dormant until a request of at least
+# ARM_MIN tokens arrives (vanilla-identical for workloads that fit).
+ARM_MIN="${ARM_MIN:-0}"
 W=/home/runner
 IMAGE="${IMAGE:-hostkv:4ccff141-1}"
 sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
 mkdir -p "$W/work/$NAME"
 
 TIER_FLAGS=()
-if [ "$MODE" = "tier" ]; then
-  if [ "$CTX160K" = "1" ]; then KEEP=2510; fi
+if [ "$MODE" = "tier" ] || [ "$MODE" = "auto" ]; then
+  if [ "$CTX160K" = "1" ] && [ "$KEEP" = "1600" ]; then KEEP=2510; fi
   TIER_FLAGS=(--host-kv-tier
               --host-kv-keep-pages "$KEEP"
               --host-kv-hot-pages 256
@@ -20,6 +26,9 @@ if [ "$MODE" = "tier" ]; then
               --host-kv-reserve-floor 128
               --host-kv-verify-sample 8
               --host-kv-stats-path /root/phase0/host-kv-stats.json)
+  if [ "$MODE" = "auto" ]; then
+    TIER_FLAGS+=(--host-kv-arm-min-input-tokens "$ARM_MIN")
+  fi
 fi
 
 sudo -n docker run -d --name "$NAME" --runtime nvidia \
@@ -36,7 +45,7 @@ sudo -n docker run -d --name "$NAME" --runtime nvidia \
   --max-mamba-cache-size 32 --mamba-ssm-dtype bfloat16 --chunked-prefill-size 8192 \
   --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 \
   --speculative-num-draft-tokens 4 --cuda-graph-backend-prefill disabled \
-  --context-length 262144 --max-total-tokens 200000 --max-running-requests 16 \
+  --context-length "$CTX_LEN" --max-total-tokens "$MAX_TOTAL_TOKENS" --max-running-requests 16 \
   --disable-radix-cache --schedule-conservativeness 1.5 \
   --mem-fraction-static 0.95 --enable-metrics \
   ${TIER_FLAGS[@]+"${TIER_FLAGS[@]}"} \

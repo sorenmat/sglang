@@ -72,6 +72,11 @@ class HostKVConfig:
     stats_path: Optional[str] = None
     stats_interval_s: float = 20.0
     arm_after: int = 4
+    # 0 = arm on the arm_after schedule (today's behavior). >0 = AUTO:
+    # stay dormant (no confiscation, no mirror, vanilla-identical) until
+    # a request with at least this many input tokens arrives - the tier
+    # only taxes workloads that actually need it.
+    arm_min_input_tokens: int = 0
 
     @staticmethod
     def from_server_args(server_args: Any) -> "HostKVConfig":
@@ -87,6 +92,8 @@ class HostKVConfig:
             verify_sample=int(getattr(
                 server_args, "host_kv_verify_sample", 8)),
             stats_path=getattr(server_args, "host_kv_stats_path", None),
+            arm_min_input_tokens=int(getattr(
+                server_args, "host_kv_arm_min_input_tokens", 0)),
         )
 
 
@@ -126,6 +133,8 @@ class HostKVTier:
         self.rows: Dict[int, Dict[str, Any]] = {}
         self.max_rows = 32
         self._arm_calls = 0
+        self._auto_pending = False
+        self._backend = None
         self._last_key: Any = None
         # Counters.
         self.counters: Dict[str, Any] = {
@@ -155,6 +164,15 @@ class HostKVTier:
         self._arm_calls += 1
         if self._arm_calls < self.cfg.arm_after:
             return
+        if self.cfg.arm_min_input_tokens > 0:
+            # AUTO: remember the backend and wait for an oversized
+            # request (checked in after_write against seq_lens). Until
+            # then the tier is inert - no confiscation, no mirror, no
+            # allocator wraps: vanilla-identical behavior.
+            self._backend = backend
+            self._auto_pending = True
+            _log("auto mode: dormant until an oversized request")
+            return
         pool = getattr(backend, "token_to_kv_pool", None)
         layers = []
         if pool is not None and getattr(
@@ -169,6 +187,10 @@ class HostKVTier:
             _log("arm: allocator/table not found; dormant")
             self.armed = True
             return
+        self._do_arm(backend, allocator, pool, layers, table)
+
+    def _do_arm(self, backend: Any, allocator: Any, pool: Any,
+                layers: list, table: Any) -> None:
         page = int(getattr(allocator, "page_size", _PAGE) or _PAGE)
         if page != _PAGE:
             _log(f"arm: allocator page_size={page} != {_PAGE}; dormant")
@@ -354,6 +376,24 @@ class HostKVTier:
     def after_write(self, forward_batch: Any) -> None:
         """Post-forward: mirror fresh pages, retire below the horizon."""
         if not self.armed:
+            if self._auto_pending:
+                seq = getattr(forward_batch, "seq_lens", None)
+                if (seq is not None and int(seq.numel()) > 0
+                        and int(seq[0].item())
+                        >= self.cfg.arm_min_input_tokens):
+                    backend = self._backend
+                    pool = getattr(backend, "token_to_kv_pool", None)
+                    layers = sorted(int(l) for l in getattr(
+                        pool, "full_attention_layer_id_mapping", [])
+                        or [])
+                    table = getattr(backend, "req_to_token", None)
+                    allocator = self._discover_allocator(backend)
+                    if (allocator is not None and table is not None
+                            and len(layers) >= 8):
+                        _log(f"auto mode: arming at ctx={int(seq[0].item())}")
+                        self._auto_pending = False
+                        self._do_arm(backend, allocator, pool,
+                                     layers, table)
             return
         out_locs = getattr(forward_batch, "out_cache_loc", None)
         if out_locs is None or out_locs.numel() == 0:
@@ -468,27 +508,15 @@ class HostKVTier:
         start, end = st["ctx_written"], st["ctx_written"] + delta
         st["ctx_written"] = end
         st["chunks"] += 1
-        table = self.table
+        # LAZY MIRROR: the write path only MARKS pages mirrorable; the
+        # single authoritative GPU->host copy happens at retire time
+        # (re-mirror in _retire), right before the page is freed. The
+        # write-path copy meant every retiring page paid the 12-layer
+        # D2H twice - the dominant prefill tax behind the tier's 160k
+        # overhead.
         for page in range(start // _PAGE, (end + _PAGE - 1) // _PAGE):
-            if page in st["mirrored"]:
-                continue
-            cols = torch.arange(page * _PAGE, (page + 1) * _PAGE,
-                                device=table.device)
-            cols = cols[cols < end]
-            if cols.numel() == 0:
-                continue
-            slots = table[row, cols].long()
-            valid = slots >= 0
-            if not bool(valid.any()):
-                continue
-            with torch.no_grad():
-                for layer in self.layers:
-                    mk, mv = self.mirror[layer]
-                    mk[slots[valid]] = self.pool.get_key_buffer(layer)[
-                        slots[valid]].to("cpu", non_blocking=False)
-                    mv[slots[valid]] = self.pool.get_value_buffer(layer)[
-                        slots[valid]].to("cpu", non_blocking=False)
-            st["mirrored"].add(page)
+            if page * _PAGE < end:
+                st["mirrored"].add(page)
         if st["chunks"] % 8 == 1:
             _log(f"row {row} chunk #{st['chunks']}: ctx={end} "
                  f"mirrored={len(st['mirrored'])} "
@@ -518,13 +546,29 @@ class HostKVTier:
             col_list = [table_cols(p, self.table.device) for p in remirror]
             src_slots = torch.cat(
                 [self.table[row, c].long().clone() for c in col_list])
-            with torch.no_grad():
-                for layer in self.layers:
-                    mk, mv = self.mirror[layer]
-                    self._copy_gpu_to_host(
-                        self.pool.get_key_buffer(layer), mk, src_slots)
-                    self._copy_gpu_to_host(
-                        self.pool.get_value_buffer(layer), mv, src_slots)
+            slots_cpu = src_slots.cpu()
+            layers = self.layers
+            mk_list = [self.mirror[layer][0] for layer in layers]
+            mv_list = [self.mirror[layer][1] for layer in layers]
+            gk_list = [self.pool.get_key_buffer(layer) for layer in layers]
+            gv_list = [self.pool.get_value_buffer(layer)
+                       for layer in layers]
+            if torch.cuda.is_available() and src_slots.is_cuda:
+                stream = self._stream_obj()
+                with torch.cuda.stream(stream):
+                    for li in range(len(layers)):
+                        mk_list[li][slots_cpu] = gk_list[li][
+                            src_slots].to("cpu", non_blocking=True)
+                        mv_list[li][slots_cpu] = gv_list[li][
+                            src_slots].to("cpu", non_blocking=True)
+                # ONE sync per retire: the frees below may hand these
+                # slots to a new request on the compute stream; the
+                # tier-stream copies must complete first.
+                stream.synchronize()
+            else:
+                for li in range(len(layers)):
+                    mk_list[li][slots_cpu] = gk_list[li][src_slots]
+                    mv_list[li][slots_cpu] = gv_list[li][src_slots]
             for p, c in zip(remirror, col_list):
                 st["page_slots"][p] = self.table[row, c].long().clone()
 

@@ -432,3 +432,47 @@ class FrameConservation(unittest.TestCase):
             f"after={runtime_frame in free_after}")
         self.assertGreater(
             self.tier.counters.get("runtime_frames_returned", 0), 0)
+
+
+class AutoArm(unittest.TestCase):
+    def _tier(self, min_tokens):
+        return HostKVTier(HostKVConfig(
+            enable=True, arm_after=1, keep_pages=40,
+            arm_min_input_tokens=min_tokens))
+
+    def test_auto_stays_dormant_below_threshold(self):
+        tier = self._tier(200000)
+        pool = FakePool(64 * 200)
+        allocator = FakeAllocator(200)
+        table = torch.zeros(4, 8192, dtype=torch.int32)
+        reqs = [FakeReq(0)]
+        sched = FakeScheduler(reqs, FakeTreeCache())
+        backend = FakeBackend(pool, allocator, sched, table)
+        tier.arm(backend, 0)
+        tier.arm(backend, 0)
+        self.assertFalse(tier.armed)
+        self.assertTrue(tier._auto_pending)
+        # A small request does not arm.
+        batch = FakeBatch([0], torch.tensor([100 * PAGE]),
+                          seq_lens=torch.tensor([100 * PAGE]))
+        tier._row_state(0)
+        tier.after_write(batch)
+        self.assertFalse(tier.armed)
+        self.assertEqual(allocator.size, 200 * PAGE)  # no confiscation
+
+    def test_auto_arms_on_oversized_request(self):
+        tier = self._tier(2000)
+        pool = FakePool(64 * 200)
+        allocator = FakeAllocator(200)
+        table = torch.zeros(4, 8192, dtype=torch.int32)
+        reqs = [FakeReq(0)]
+        sched = FakeScheduler(reqs, FakeTreeCache())
+        backend = FakeBackend(pool, allocator, sched, table)
+        tier.arm(backend, 0)
+        self.assertFalse(tier.armed)
+        batch = FakeBatch([0], torch.tensor([50 * PAGE]),
+                          seq_lens=torch.tensor([50 * PAGE]))
+        tier._row_state(0)
+        tier.after_write(batch)
+        self.assertTrue(tier.armed)
+        self.assertLess(allocator.size, 200 * PAGE)  # confiscated

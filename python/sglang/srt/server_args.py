@@ -2721,6 +2721,11 @@ class ServerArgs:
         "Bitwise-verify every Nth staged page against the host mirror (0 disables sampling checks; the first page is always verified).",
         NS("memory"),
     ] = 8
+    host_kv_arm_min_input_tokens: A[
+        int,
+        "AUTO arming: stay dormant (vanilla-identical, no confiscation or mirror) until a request with at least this many input tokens arrives; 0 arms on the warmup schedule.",
+        NS("memory"),
+    ] = 0
     host_kv_stats_path: A[
         Optional[str],
         "Path for periodic tier counters/stats JSON (disabled when unset).",
