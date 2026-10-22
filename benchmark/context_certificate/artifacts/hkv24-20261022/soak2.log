@@ -1,0 +1,546 @@
+N= 2 logprobs= True [('ERR', "RemoteDisconnected('Remote end closed connection without response')"), ('ERR', "RemoteDisconnected('Remote end closed connection w
+N= 4 logprobs= True [('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenP
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+=== t=24min forgotten=999 recycles=0 ===
+0
+recycle: finish budget reached (999)
+recycled (1); healthy again
+N= 1 logprobs= True [(31.3, 512, 'length')]
+N= 2 logprobs= True [(16.7, 512, 'length'), (29.0, 512, 'length')]
+N= 4 logprobs= True [(12.8, 512, 'length'), (24.6, 512, 'length'), (49.5, 512, 'length'), (36.9, 512, 'length')]
+N= 2 logprobs= True [(24.1, 512, 'length'), (12.3, 512, 'length')]
+N= 1 logprobs= True [(12.3, 512, 'length')]
+=== t=29min forgotten=11 recycles=1 ===
+0
+N= 1 logprobs= True [(13.4, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (12.3, 512, 'length')]
+N= 4 logprobs= True [(25.0, 512, 'length'), (37.9, 512, 'length'), (50.8, 512, 'length'), (12.9, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (25.2, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=31min forgotten=21 recycles=1 ===
+0
+N= 1 logprobs= True [(11.9, 512, 'length')]
+N= 2 logprobs= True [(13.4, 512, 'length'), (25.3, 512, 'length')]
+N= 4 logprobs= True [(12.3, 512, 'length'), (25.2, 512, 'length'), (49.3, 512, 'length'), (37.5, 512, 'length')]
+N= 2 logprobs= True [(24.8, 512, 'length'), (13.1, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=33min forgotten=31 recycles=1 ===
+0
+recycle: finish budget reached (31)
+recycled (2); healthy again
+N= 1 logprobs= True [(25.5, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (25.6, 512, 'length')]
+N= 4 logprobs= True [(50.7, 512, 'length'), (13.5, 512, 'length'), (25.7, 512, 'length'), (38.0, 512, 'length')]
+N= 2 logprobs= True [(26.8, 512, 'length'), (13.4, 512, 'length')]
+N= 1 logprobs= True [(13.1, 512, 'length')]
+=== t=38min forgotten=11 recycles=2 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.9, 512, 'length'), (13.1, 512, 'length')]
+N= 4 logprobs= True [(37.6, 512, 'length'), (12.2, 512, 'length'), (25.2, 512, 'length'), (49.7, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (13.0, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=41min forgotten=21 recycles=2 ===
+0
+N= 1 logprobs= True [(13.4, 512, 'length')]
+N= 2 logprobs= True [(24.9, 512, 'length'), (11.9, 512, 'length')]
+N= 4 logprobs= True [(13.2, 512, 'length'), (37.3, 512, 'length'), (25.5, 512, 'length'), (50.5, 512, 'length')]
+N= 2 logprobs= True [(11.9, 512, 'length'), (24.2, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=43min forgotten=31 recycles=2 ===
+0
+recycle: finish budget reached (31)
+recycled (3); healthy again
+N= 1 logprobs= True [(24.5, 512, 'length')]
+N= 2 logprobs= True [(12.2, 512, 'length'), (25.1, 512, 'length')]
+N= 4 logprobs= True [(36.1, 512, 'length'), (12.3, 512, 'length'), (24.3, 512, 'length'), (49.2, 512, 'length')]
+N= 2 logprobs= True [(24.8, 512, 'length'), (12.0, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=48min forgotten=11 recycles=3 ===
+0
+N= 1 logprobs= True [(12.1, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (24.2, 512, 'length')]
+N= 4 logprobs= True [(37.3, 512, 'length'), (12.5, 512, 'length'), (49.4, 512, 'length'), (24.3, 512, 'length')]
+N= 2 logprobs= True [(24.3, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(12.7, 512, 'length')]
+=== t=50min forgotten=21 recycles=3 ===
+0
+N= 1 logprobs= True [(13.3, 512, 'length')]
+N= 2 logprobs= True [(25.7, 512, 'length'), (13.0, 512, 'length')]
+N= 4 logprobs= True [(12.8, 512, 'length'), (36.7, 512, 'length'), (49.1, 512, 'length'), (24.6, 512, 'length')]
+N= 2 logprobs= True [(13.2, 512, 'length'), (26.6, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=52min forgotten=31 recycles=3 ===
+0
+recycle: finish budget reached (31)
+recycled (4); healthy again
+N= 1 logprobs= True [(25.0, 512, 'length')]
+N= 2 logprobs= True [(26.6, 512, 'length'), (14.3, 512, 'length')]
+N= 4 logprobs= True [(13.1, 512, 'length'), (37.1, 512, 'length'), (24.8, 512, 'length'), (48.9, 512, 'length')]
+N= 2 logprobs= True [(13.0, 512, 'length'), (26.2, 512, 'length')]
+N= 1 logprobs= True [(12.4, 512, 'length')]
+=== t=57min forgotten=11 recycles=4 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(26.1, 512, 'length'), (13.2, 512, 'length')]
+N= 4 logprobs= True [(12.7, 512, 'length'), (37.2, 512, 'length'), (24.9, 512, 'length'), (49.2, 512, 'length')]
+N= 2 logprobs= True [(24.4, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=59min forgotten=21 recycles=4 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (24.2, 512, 'length')]
+N= 4 logprobs= True [(12.7, 512, 'length'), (25.3, 512, 'length'), (51.5, 512, 'length'), (38.5, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (24.9, 512, 'length')]
+N= 1 logprobs= True [(12.3, 512, 'length')]
+=== t=61min forgotten=31 recycles=4 ===
+0
+recycle: finish budget reached (31)
+recycled (5); healthy again
+N= 1 logprobs= True [(25.4, 512, 'length')]
+N= 2 logprobs= True [(12.1, 512, 'length'), (24.7, 512, 'length')]
+N= 4 logprobs= True [(25.7, 512, 'length'), (49.5, 512, 'length'), (12.8, 512, 'length'), (37.6, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (12.6, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=67min forgotten=11 recycles=5 ===
+0
+N= 1 logprobs= True [(12.4, 512, 'length')]
+N= 2 logprobs= True [(24.4, 512, 'length'), (12.0, 512, 'length')]
+N= 4 logprobs= True [(13.6, 512, 'length'), (52.1, 512, 'length'), (38.6, 512, 'length'), (25.7, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (12.6, 512, 'length')]
+N= 1 logprobs= True [(12.5, 512, 'length')]
+=== t=69min forgotten=21 recycles=5 ===
+0
+N= 1 logprobs= True [(12.7, 512, 'length')]
+N= 2 logprobs= True [(25.2, 512, 'length'), (12.6, 512, 'length')]
+N= 4 logprobs= True [(25.3, 512, 'length'), (49.8, 512, 'length'), (13.1, 512, 'length'), (37.1, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (25.8, 512, 'length')]
+N= 1 logprobs= True [(12.4, 512, 'length')]
+=== t=71min forgotten=31 recycles=5 ===
+0
+recycle: finish budget reached (31)
+recycled (6); healthy again
+N= 1 logprobs= True [(24.4, 512, 'length')]
+N= 2 logprobs= True [(24.1, 512, 'length'), (12.4, 512, 'length')]
+N= 4 logprobs= True [(26.1, 512, 'length'), (13.1, 512, 'length'), (38.4, 512, 'length'), (51.0, 512, 'length')]
+N= 2 logprobs= True [(26.0, 512, 'length'), (13.4, 512, 'length')]
+N= 1 logprobs= True [(12.9, 512, 'length')]
+=== t=76min forgotten=11 recycles=6 ===
+0
+N= 1 logprobs= True [(13.2, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (26.3, 512, 'length')]
+N= 4 logprobs= True [(26.8, 512, 'length'), (39.8, 512, 'length'), (52.3, 512, 'length'), (13.6, 512, 'length')]
+N= 2 logprobs= True [(26.0, 512, 'length'), (12.9, 512, 'length')]
+N= 1 logprobs= True [(12.0, 512, 'length')]
+=== t=78min forgotten=21 recycles=6 ===
+0
+N= 1 logprobs= True [(12.6, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (24.9, 512, 'length')]
+N= 4 logprobs= True [(12.9, 512, 'length'), (24.8, 512, 'length'), (49.6, 512, 'length'), (36.9, 512, 'length')]
+N= 2 logprobs= True [(11.9, 512, 'length'), (24.4, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=80min forgotten=31 recycles=6 ===
+0
+recycle: finish budget reached (31)
+recycled (7); healthy again
+N= 1 logprobs= True [(24.1, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (25.1, 512, 'length')]
+N= 4 logprobs= True [(13.2, 512, 'length'), (26.0, 512, 'length'), (52.0, 512, 'length'), (39.0, 512, 'length')]
+N= 2 logprobs= True [(29.5, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=85min forgotten=11 recycles=7 ===
+0
+N= 1 logprobs= True [(11.9, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (25.4, 512, 'length')]
+N= 4 logprobs= True [(12.1, 512, 'length'), (50.4, 512, 'length'), (37.7, 512, 'length'), (25.1, 512, 'length')]
+N= 2 logprobs= True [(26.1, 512, 'length'), (13.3, 512, 'length')]
+N= 1 logprobs= True [(12.5, 512, 'length')]
+=== t=87min forgotten=21 recycles=7 ===
+0
+N= 1 logprobs= True [(12.7, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (25.9, 512, 'length')]
+N= 4 logprobs= True [(25.0, 512, 'length'), (38.5, 512, 'length'), (51.4, 512, 'length'), (12.2, 512, 'length')]
+N= 2 logprobs= True [(26.0, 512, 'length'), (12.9, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=90min forgotten=31 recycles=7 ===
+0
+recycle: finish budget reached (31)
+recycled (8); healthy again
+N= 1 logprobs= True [(24.5, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (25.7, 512, 'length')]
+N= 4 logprobs= True [(12.8, 512, 'length'), (25.7, 512, 'length'), (37.5, 512, 'length'), (50.5, 512, 'length')]
+N= 2 logprobs= True [(12.2, 512, 'length'), (25.0, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=95min forgotten=11 recycles=8 ===
+0
+N= 1 logprobs= True [(12.9, 512, 'length')]
+N= 2 logprobs= True [(12.3, 512, 'length'), (25.0, 512, 'length')]
+N= 4 logprobs= True [(25.1, 512, 'length'), (51.0, 512, 'length'), (38.0, 512, 'length'), (12.3, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (25.0, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=97min forgotten=21 recycles=8 ===
+0
+N= 1 logprobs= True [(12.7, 512, 'length')]
+N= 2 logprobs= True [(12.1, 512, 'length'), (23.8, 512, 'length')]
+N= 4 logprobs= True [(24.5, 512, 'length'), (49.0, 512, 'length'), (12.7, 512, 'length'), (36.5, 512, 'length')]
+N= 2 logprobs= True [(12.9, 512, 'length'), (24.9, 512, 'length')]
+N= 1 logprobs= True [(12.4, 512, 'length')]
+=== t=99min forgotten=31 recycles=8 ===
+0
+recycle: finish budget reached (31)
+recycled (9); healthy again
+N= 1 logprobs= True [(25.5, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (25.3, 512, 'length')]
+N= 4 logprobs= True [(12.0, 512, 'length'), (24.1, 512, 'length'), (49.2, 512, 'length'), (36.1, 512, 'length')]
+N= 2 logprobs= True [(25.7, 512, 'length'), (13.5, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=104min forgotten=11 recycles=9 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.9, 512, 'length'), (12.9, 512, 'length')]
+N= 4 logprobs= True [(13.0, 512, 'length'), (39.0, 512, 'length'), (51.9, 512, 'length'), (26.0, 512, 'length')]
+N= 2 logprobs= True [(24.7, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=106min forgotten=21 recycles=9 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (12.6, 512, 'length')]
+N= 4 logprobs= True [(26.5, 512, 'length'), (13.2, 512, 'length'), (39.1, 512, 'length'), (50.9, 512, 'length')]
+N= 2 logprobs= True [(25.0, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=108min forgotten=31 recycles=9 ===
+0
+recycle: finish budget reached (31)
+recycled (10); healthy again
+N= 1 logprobs= True [(26.5, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (12.3, 512, 'length')]
+N= 4 logprobs= True [(13.3, 512, 'length'), (50.9, 512, 'length'), (25.9, 512, 'length'), (38.2, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (24.2, 512, 'length')]
+N= 1 logprobs= True [(13.1, 512, 'length')]
+=== t=114min forgotten=11 recycles=10 ===
+0
+N= 1 logprobs= True [(12.5, 512, 'length')]
+N= 2 logprobs= True [(25.5, 512, 'length'), (13.2, 512, 'length')]
+N= 4 logprobs= True [(12.7, 512, 'length'), (38.1, 512, 'length'), (25.2, 512, 'length'), (51.5, 512, 'length')]
+N= 2 logprobs= True [(12.9, 512, 'length'), (25.4, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=116min forgotten=21 recycles=10 ===
+0
+N= 1 logprobs= True [(13.4, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (12.9, 512, 'length')]
+N= 4 logprobs= True [(13.1, 512, 'length'), (51.0, 512, 'length'), (38.6, 512, 'length'), (25.5, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (25.6, 512, 'length')]
+N= 1 logprobs= True [(12.5, 512, 'length')]
+=== t=118min forgotten=31 recycles=10 ===
+0
+recycle: finish budget reached (31)
+recycled (11); healthy again
+N= 1 logprobs= True [(24.1, 512, 'length')]
+N= 2 logprobs= True [(26.0, 512, 'length'), (13.4, 512, 'length')]
+N= 4 logprobs= True [(38.0, 512, 'length'), (12.3, 512, 'length'), (25.7, 512, 'length'), (51.3, 512, 'length')]
+N= 2 logprobs= True [(25.1, 512, 'length'), (12.1, 512, 'length')]
+N= 1 logprobs= True [(12.5, 512, 'length')]
+=== t=123min forgotten=11 recycles=11 ===
+0
+N= 1 logprobs= True [(13.1, 512, 'length')]
+N= 2 logprobs= True [(24.0, 512, 'length'), (12.1, 512, 'length')]
+N= 4 logprobs= True [(13.1, 512, 'length'), (38.1, 512, 'length'), (50.8, 512, 'length'), (26.0, 512, 'length')]
+N= 2 logprobs= True [(12.8, 512, 'length'), (25.1, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=125min forgotten=21 recycles=11 ===
+0
+N= 1 logprobs= True [(13.1, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (24.7, 512, 'length')]
+N= 4 logprobs= True [(12.7, 512, 'length'), (36.9, 512, 'length'), (49.2, 512, 'length'), (24.7, 512, 'length')]
+N= 2 logprobs= True [(23.8, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(13.4, 512, 'length')]
+=== t=127min forgotten=31 recycles=11 ===
+0
+recycle: finish budget reached (31)
+recycled (12); healthy again
+N= 1 logprobs= True [(25.0, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (13.5, 512, 'length')]
+N= 4 logprobs= True [(25.5, 512, 'length'), (37.3, 512, 'length'), (49.9, 512, 'length'), (13.1, 512, 'length')]
+N= 2 logprobs= True [(13.2, 512, 'length'), (26.3, 512, 'length')]
+N= 1 logprobs= True [(12.0, 512, 'length')]
+=== t=132min forgotten=11 recycles=12 ===
+0
+N= 1 logprobs= True [(11.8, 512, 'length')]
+N= 2 logprobs= True [(26.5, 512, 'length'), (13.2, 512, 'length')]
+N= 4 logprobs= True [(13.3, 512, 'length'), (51.7, 512, 'length'), (25.6, 512, 'length'), (39.0, 512, 'length')]
+N= 2 logprobs= True [(25.4, 512, 'length'), (12.6, 512, 'length')]
+N= 1 logprobs= True [(13.1, 512, 'length')]
+=== t=135min forgotten=21 recycles=12 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.2, 512, 'length'), (13.1, 512, 'length')]
+N= 4 logprobs= True [(12.9, 512, 'length'), (38.2, 512, 'length'), (25.5, 512, 'length'), (50.2, 512, 'length')]
+N= 2 logprobs= True [(25.4, 512, 'length'), (12.7, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=137min forgotten=31 recycles=12 ===
+0
+recycle: finish budget reached (31)
+recycled (13); healthy again
+N= 1 logprobs= True [(24.7, 512, 'length')]
+N= 2 logprobs= True [(24.3, 512, 'length'), (12.6, 512, 'length')]
+N= 4 logprobs= True [(38.0, 512, 'length'), (25.3, 512, 'length'), (49.9, 512, 'length'), (13.0, 512, 'length')]
+N= 2 logprobs= True [(23.7, 512, 'length'), (11.8, 512, 'length')]
+N= 1 logprobs= True [(13.3, 512, 'length')]
+=== t=142min forgotten=11 recycles=13 ===
+0
+N= 1 logprobs= True [(11.9, 512, 'length')]
+N= 2 logprobs= True [(25.7, 512, 'length'), (12.8, 512, 'length')]
+N= 4 logprobs= True [(11.9, 512, 'length'), (24.6, 512, 'length'), (49.3, 512, 'length'), (36.5, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (25.0, 512, 'length')]
+N= 1 logprobs= True [(13.1, 512, 'length')]
+=== t=144min forgotten=21 recycles=13 ===
+0
+N= 1 logprobs= True [(13.1, 512, 'length')]
+N= 2 logprobs= True [(12.8, 512, 'length'), (24.6, 512, 'length')]
+N= 4 logprobs= True [(35.5, 512, 'length'), (23.6, 512, 'length'), (48.7, 512, 'length'), (11.8, 512, 'length')]
+N= 2 logprobs= True [(25.1, 512, 'length'), (12.4, 512, 'length')]
+N= 1 logprobs= True [(13.3, 512, 'length')]
+=== t=146min forgotten=31 recycles=13 ===
+0
+recycle: finish budget reached (31)
+recycled (14); healthy again
+N= 1 logprobs= True [(26.8, 512, 'length')]
+N= 2 logprobs= True [(26.5, 512, 'length'), (13.4, 512, 'length')]
+N= 4 logprobs= True [(25.7, 512, 'length'), (38.1, 512, 'length'), (13.0, 512, 'length'), (51.1, 512, 'length')]
+N= 2 logprobs= True [(26.1, 512, 'length'), (13.4, 512, 'length')]
+N= 1 logprobs= True [(12.9, 512, 'length')]
+=== t=151min forgotten=11 recycles=14 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.5, 512, 'length'), (13.1, 512, 'length')]
+N= 4 logprobs= True [(25.6, 512, 'length'), (50.6, 512, 'length'), (38.5, 512, 'length'), (12.4, 512, 'length')]
+N= 2 logprobs= True [(24.7, 512, 'length'), (12.5, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=153min forgotten=21 recycles=14 ===
+0
+N= 1 logprobs= True [(12.2, 512, 'length')]
+N= 2 logprobs= True [(12.3, 512, 'length'), (24.9, 512, 'length')]
+N= 4 logprobs= True [(38.7, 512, 'length'), (25.4, 512, 'length'), (12.7, 512, 'length'), (51.9, 512, 'length')]
+N= 2 logprobs= True [(23.9, 512, 'length'), (12.2, 512, 'length')]
+N= 1 logprobs= True [(12.4, 512, 'length')]
+=== t=155min forgotten=31 recycles=14 ===
+0
+recycle: finish budget reached (31)
+recycled (15); healthy again
+N= 1 logprobs= True [(25.9, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (25.5, 512, 'length')]
+N= 4 logprobs= True [(12.5, 512, 'length'), (51.5, 512, 'length'), (38.3, 512, 'length'), (25.6, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (12.9, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=161min forgotten=11 recycles=15 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (13.1, 512, 'length')]
+N= 4 logprobs= True [(11.8, 512, 'length'), (51.0, 512, 'length'), (37.8, 512, 'length'), (24.9, 512, 'length')]
+N= 2 logprobs= True [(11.9, 512, 'length'), (24.8, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=163min forgotten=21 recycles=15 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(25.7, 512, 'length'), (12.8, 512, 'length')]
+N= 4 logprobs= True [(12.9, 512, 'length'), (24.8, 512, 'length'), (49.1, 512, 'length'), (36.7, 512, 'length')]
+N= 2 logprobs= True [(24.8, 512, 'length'), (11.9, 512, 'length')]
+N= 1 logprobs= True [(12.9, 512, 'length')]
+=== t=165min forgotten=31 recycles=15 ===
+0
+recycle: finish budget reached (31)
+recycled (16); healthy again
+N= 1 logprobs= True [(24.4, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (13.2, 512, 'length')]
+N= 4 logprobs= True [(25.2, 512, 'length'), (12.8, 512, 'length'), (37.4, 512, 'length'), (50.2, 512, 'length')]
+N= 2 logprobs= True [(24.3, 512, 'length'), (11.8, 512, 'length')]
+N= 1 logprobs= True [(13.4, 512, 'length')]
+=== t=170min forgotten=11 recycles=16 ===
+0
+N= 1 logprobs= True [(13.2, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (24.6, 512, 'length')]
+N= 4 logprobs= True [(25.1, 512, 'length'), (37.0, 512, 'length'), (12.6, 512, 'length'), (49.3, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (12.2, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=172min forgotten=21 recycles=16 ===
+0
+N= 1 logprobs= True [(11.9, 512, 'length')]
+N= 2 logprobs= True [(13.1, 512, 'length'), (24.9, 512, 'length')]
+N= 4 logprobs= True [(25.2, 512, 'length'), (50.2, 512, 'length'), (12.7, 512, 'length'), (36.9, 512, 'length')]
+N= 2 logprobs= True [(12.4, 512, 'length'), (25.1, 512, 'length')]
+N= 1 logprobs= True [(13.6, 512, 'length')]
+=== t=174min forgotten=31 recycles=16 ===
+0
+recycle: finish budget reached (31)
+recycled (17); healthy again
+N= 1 logprobs= True [(23.5, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (25.7, 512, 'length')]
+N= 4 logprobs= True [(12.0, 512, 'length'), (50.0, 512, 'length'), (25.0, 512, 'length'), (37.5, 512, 'length')]
+N= 2 logprobs= True [(25.4, 512, 'length'), (12.7, 512, 'length')]
+N= 1 logprobs= True [(12.0, 512, 'length')]
+=== t=179min forgotten=11 recycles=17 ===
+0
+N= 1 logprobs= True [(12.2, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (12.9, 512, 'length')]
+N= 4 logprobs= True [(26.2, 512, 'length'), (51.9, 512, 'length'), (39.0, 512, 'length'), (13.3, 512, 'length')]
+N= 2 logprobs= True [(25.9, 512, 'length'), (12.9, 512, 'length')]
+N= 1 logprobs= True [(13.7, 512, 'length')]
+=== t=181min forgotten=21 recycles=17 ===
+0
+N= 1 logprobs= True [(12.0, 512, 'length')]
+N= 2 logprobs= True [(24.9, 512, 'length'), (12.6, 512, 'length')]
+N= 4 logprobs= True [(25.5, 512, 'length'), (49.5, 512, 'length'), (12.5, 512, 'length'), (37.4, 512, 'length')]
+N= 2 logprobs= True [(11.9, 512, 'length'), (25.1, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=183min forgotten=31 recycles=17 ===
+0
+recycle: finish budget reached (31)
+recycled (18); healthy again
+N= 1 logprobs= True [(24.3, 512, 'length')]
+N= 2 logprobs= True [(24.6, 512, 'length'), (12.1, 512, 'length')]
+N= 4 logprobs= True [(12.1, 512, 'length'), (36.9, 512, 'length'), (25.1, 512, 'length'), (49.0, 512, 'length')]
+N= 2 logprobs= True [(13.4, 512, 'length'), (26.8, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=189min forgotten=11 recycles=18 ===
+0
+N= 1 logprobs= True [(12.0, 512, 'length')]
+N= 2 logprobs= True [(12.8, 512, 'length'), (25.6, 512, 'length')]
+N= 4 logprobs= True [(12.8, 512, 'length'), (37.7, 512, 'length'), (50.4, 512, 'length'), (24.6, 512, 'length')]
+N= 2 logprobs= True [(25.4, 512, 'length'), (13.0, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=191min forgotten=21 recycles=18 ===
+0
+N= 1 logprobs= True [(13.3, 512, 'length')]
+N= 2 logprobs= True [(25.2, 512, 'length'), (12.4, 512, 'length')]
+N= 4 logprobs= True [(11.8, 512, 'length'), (37.1, 512, 'length'), (24.7, 512, 'length'), (50.0, 512, 'length')]
+N= 2 logprobs= True [(24.9, 512, 'length'), (13.0, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=193min forgotten=31 recycles=18 ===
+0
+recycle: finish budget reached (31)
+recycled (19); healthy again
+N= 1 logprobs= True [('ERR', "RemoteDisconnected('Remote end closed connection without response')")]
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 4 logprobs= True [('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(ConnectionResetError(104, 'Connection reset by peer'))"), ('ERR'
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+=== t=196min forgotten=0 recycles=19 ===
+1
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 4 logprobs= True [('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenP
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+=== t=196min forgotten=999 recycles=19 ===
+1
+recycle: finish budget reached (999)
+recycled (20); healthy again
+N= 1 logprobs= True [(25.4, 512, 'length')]
+N= 2 logprobs= True [(23.7, 512, 'length'), (12.0, 512, 'length')]
+N= 4 logprobs= True [(36.7, 512, 'length'), (24.4, 512, 'length'), (49.5, 512, 'length'), (11.8, 512, 'length')]
+N= 2 logprobs= True [(13.3, 512, 'length'), (25.8, 512, 'length')]
+N= 1 logprobs= True [(12.2, 512, 'length')]
+=== t=201min forgotten=11 recycles=20 ===
+0
+N= 1 logprobs= True [(12.8, 512, 'length')]
+N= 2 logprobs= True [(26.5, 512, 'length'), (13.3, 512, 'length')]
+N= 4 logprobs= True [(38.7, 512, 'length'), (13.1, 512, 'length'), (51.6, 512, 'length'), (26.1, 512, 'length')]
+N= 2 logprobs= True [(12.6, 512, 'length'), (25.3, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=203min forgotten=21 recycles=20 ===
+0
+N= 1 logprobs= True [(12.3, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (24.7, 512, 'length')]
+N= 4 logprobs= True [(25.8, 512, 'length'), (52.2, 512, 'length'), (39.0, 512, 'length'), (13.3, 512, 'length')]
+N= 2 logprobs= True [(12.7, 512, 'length'), (24.9, 512, 'length')]
+N= 1 logprobs= True [(13.3, 512, 'length')]
+=== t=205min forgotten=31 recycles=20 ===
+0
+recycle: finish budget reached (31)
+recycled (21); healthy again
+N= 1 logprobs= True [('ERR', "RemoteDisconnected('Remote end closed connection without response')")]
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 4 logprobs= True [('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "Connect
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+=== t=209min forgotten=0 recycles=21 ===
+1
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 4 logprobs= True [('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenPipeError(32, 'Broken pipe'))"), ('ERR', "URLError(BrokenP
+N= 2 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')"), ('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+N= 1 logprobs= True [('ERR', "ConnectionResetError(104, 'Connection reset by peer')")]
+=== t=209min forgotten=0 recycles=21 ===
+1
+N= 1 logprobs= True [('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused'))")]
+N= 2 logprobs= True [('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused'))"), ('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused')
+N= 4 logprobs= True [('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused'))"), ('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused')
+N= 2 logprobs= True [('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused'))"), ('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused')
+N= 1 logprobs= True [('ERR', "URLError(ConnectionRefusedError(111, 'Connection refused'))")]
+=== t=209min forgotten=999 recycles=21 ===
+1
+recycle: finish budget reached (999)
+recycled (22); healthy again
+N= 1 logprobs= True [(24.5, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (12.5, 512, 'length')]
+N= 4 logprobs= True [(39.3, 512, 'length'), (52.1, 512, 'length'), (13.4, 512, 'length'), (26.6, 512, 'length')]
+N= 2 logprobs= True [(23.7, 512, 'length'), (11.8, 512, 'length')]
+N= 1 logprobs= True [(13.2, 512, 'length')]
+=== t=214min forgotten=11 recycles=22 ===
+0
+N= 1 logprobs= True [(12.7, 512, 'length')]
+N= 2 logprobs= True [(24.3, 512, 'length'), (12.6, 512, 'length')]
+N= 4 logprobs= True [(11.9, 512, 'length'), (48.7, 512, 'length'), (25.2, 512, 'length'), (36.9, 512, 'length')]
+N= 2 logprobs= True [(25.9, 512, 'length'), (13.7, 512, 'length')]
+N= 1 logprobs= True [(13.5, 512, 'length')]
+=== t=216min forgotten=21 recycles=22 ===
+0
+N= 1 logprobs= True [(12.1, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (12.9, 512, 'length')]
+N= 4 logprobs= True [(13.0, 512, 'length'), (26.0, 512, 'length'), (38.2, 512, 'length'), (50.0, 512, 'length')]
+N= 2 logprobs= True [(25.6, 512, 'length'), (13.0, 512, 'length')]
+N= 1 logprobs= True [(13.0, 512, 'length')]
+=== t=218min forgotten=31 recycles=22 ===
+0
+recycle: finish budget reached (31)
+recycled (23); healthy again
+N= 1 logprobs= True [(25.0, 512, 'length')]
+N= 2 logprobs= True [(25.8, 512, 'length'), (12.8, 512, 'length')]
+N= 4 logprobs= True [(24.3, 512, 'length'), (36.0, 512, 'length'), (47.9, 512, 'length'), (12.3, 512, 'length')]
+N= 2 logprobs= True [(24.3, 512, 'length'), (12.5, 512, 'length')]
+N= 1 logprobs= True [(11.9, 512, 'length')]
+=== t=223min forgotten=11 recycles=23 ===
+0
+N= 1 logprobs= True [(13.1, 512, 'length')]
+N= 2 logprobs= True [(24.6, 512, 'length'), (12.1, 512, 'length')]
+N= 4 logprobs= True [(12.9, 512, 'length'), (25.1, 512, 'length'), (37.2, 512, 'length'), (49.2, 512, 'length')]
+N= 2 logprobs= True [(23.5, 512, 'length'), (11.8, 512, 'length')]
+N= 1 logprobs= True [(12.3, 512, 'length')]
+=== t=225min forgotten=21 recycles=23 ===
+0
+N= 1 logprobs= True [(11.9, 512, 'length')]
+N= 2 logprobs= True [(25.3, 512, 'length'), (11.9, 512, 'length')]
+N= 4 logprobs= True [(13.0, 512, 'length'), (39.1, 512, 'length'), (52.1, 512, 'length'), (26.1, 512, 'length')]
+N= 2 logprobs= True [(11.9, 512, 'length'), (23.6, 512, 'length')]
+N= 1 logprobs= True [(12.6, 512, 'length')]
+=== t=227min forgotten=31 recycles=23 ===
+0
+recycle: finish budget reached (31)
+recycled (24); healthy again
+N= 1 logprobs= True [(24.2, 512, 'length')]
+N= 2 logprobs= True [(24.9, 512, 'length'), (12.3, 512, 'length')]
+N= 4 logprobs= True [(25.3, 512, 'length'), (37.8, 512, 'length'), (13.1, 512, 'length'), (50.8, 512, 'length')]
+N= 2 logprobs= True [(26.0, 512, 'length'), (13.1, 512, 'length')]
+N= 1 logprobs= True [(13.4, 512, 'length')]
+=== t=232min forgotten=11 recycles=24 ===
+0
+N= 1 logprobs= True [(12.7, 512, 'length')]
+N= 2 logprobs= True [(25.4, 512, 'length'), (11.9, 512, 'length')]
+N= 4 logprobs= True [(13.3, 512, 'length'), (26.4, 512, 'length'), (51.2, 512, 'length'), (38.6, 512, 'length')]
+N= 2 logprobs= True [(25.9, 512, 'length'), (13.3, 512, 'length')]
+N= 1 logprobs= True [(12.3, 512, 'length')]
+=== t=235min forgotten=21 recycles=24 ===
+0
+SOAK-COMPLETE recycles=24
+SOAK2-DONE
