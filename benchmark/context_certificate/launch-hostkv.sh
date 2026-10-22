@@ -3,7 +3,7 @@
 # Usage: launch-hostkv.sh GPU PORT NAME MODE [KEEP_PAGES] [CTX_160K]
 set -euo pipefail
 GPU="${1:-0}"; PORT="${2:-30030}"; NAME="${3:-diag}"; MODE="${4:-tier}"
-KEEP="${5:-1600}"; CTX160K="${6:-0}"
+KEEP="${5:-${KEEP:-1600}}"; CTX160K="${6:-0}"
 # Pool geometry overrides (256k probe: MAX_TOTAL_TOKENS=300000 KEEP=4100)
 MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-200000}"
 CTX_LEN="${CTX_LEN:-262144}"
@@ -16,7 +16,6 @@ sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
 mkdir -p "$W/work/$NAME"
 
 TIER_FLAGS=()
-KEEP="${KEEP:-1600}"
 if [ "$MODE" = "tier" ] || [ "$MODE" = "auto" ]; then
   if [ "$CTX160K" = "1" ] && [ "$KEEP" = "1600" ]; then KEEP=2510; fi
   TIER_FLAGS=(--host-kv-tier
