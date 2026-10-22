@@ -1402,7 +1402,10 @@ class QwenSparseAttnBackend(AttentionBackend):
     def _host_kv_post(self, forward_batch, topk_indices) -> None:
         """Host-KV tier post-forward hooks: coverage audit + mirror/retire."""
         tier = getattr(self, "host_kv_tier", None)
-        if tier is None or not tier.cfg.enable or not tier.armed:
+        if tier is None or not tier.cfg.enable:
+            # Not gated on tier.armed: AUTO mode arms INSIDE after_write
+            # (its first call is the oversized trigger); after_write and
+            # audit_coverage internally no-op when unarmed.
             return
         try:
             if torch.cuda.is_current_stream_capturing():
