@@ -1,7 +1,8 @@
 # HKV-24 — Production readiness: 4-hour soak, runbook, known limitations
 
 Branch `host-kv/main` @ `5d2b6f7a15` (image `hostkv:4ccff141-20`, base lineage `4ccff141db`).
-Hardware: 1× L4 (g4-standard-4 spot), Qwen3.8-Next (QSA + Flash Sparse), TP=1.
+Hardware: 1× RTX PRO 6000 Blackwell 96 GB (g4-standard-4 spot),
+Qwen3.8-Next (QSA + Flash Sparse, NVFP4), TP=1.
 Soak instance: `instance-20261022-final` (asia-south1-c), 2026-10-22.
 
 ## 1. Soak — 4 hours, mixed concurrency, tier mode keep=1700
