@@ -497,6 +497,69 @@ class FreeSegmentContamination(unittest.TestCase):
                 int(self.allocator.free_pages.numel()), keep)
 
 
+    def test_orphan_sweeper_reclaims_after_two_forgets(self):
+        """HKV-27: a page allocated by the runtime but never table-written
+        (final verify/draft tail) is unreachable to every table-read-based
+        release path. The sweeper in forget_row must return it to the
+        allocator once it stays unreferenced across two forgets."""
+        with tempfile.NamedTemporaryFile(suffix=".json") as fh:
+            self.tier.cfg.stats_path = fh.name
+            self._prefill(0, 0, 2048)
+            # Make a genuine orphan: take a page from the allocator (as
+            # alloc_extend would) and let go of every reference to it.
+            free_before = set(self.allocator.free_pages.tolist())
+            orphan = free_before.pop()
+            self.allocator.free_pages = torch.tensor(
+                sorted(free_before), dtype=torch.int64)
+            self.assertNotIn(orphan,
+                             set(self.allocator.free_pages.tolist()))
+
+            def _finish_cycle(n_tokens):
+                self._prefill(0, 0, n_tokens)
+                self.tier.forget_row(0)
+                self.allocator.free(
+                    self.table[0, :n_tokens].long().clone())
+                self.table[0, :4096] = 0
+
+            # Distinct chunk counts per cycle: regression guard for the
+            # global (first-slot, size) dedupe, which skipped the first
+            # chunk of a recycled request whose pages reproduced the
+            # previous forward's key (rows[0] never re-created).
+            _finish_cycle(1024)  # first forget: orphan seen, not swept
+            self.assertNotIn(orphan,
+                             set(self.allocator.free_pages.tolist()))
+            _finish_cycle(1152)  # second forget: stable orphan -> swept
+            self.assertIn(
+                orphan, set(self.allocator.free_pages.tolist()),
+                f"orphan page {orphan} not reclaimed; "
+                f"counters={self.tier.counters}")
+            self.assertGreaterEqual(
+                self.tier.counters.get("orphan_reclaimed", 0), 1)
+
+    def test_orphan_sweeper_runs_without_stats_path(self):
+        """The sweep is the HKV-27 fix, not instrumentation: it must
+        run with stats dumping disabled (stats_path unset)."""
+        self.assertIsNone(self.tier.cfg.stats_path)
+        self._prefill(0, 0, 2048)
+        free_before = set(self.allocator.free_pages.tolist())
+        orphan = free_before.pop()
+        self.allocator.free_pages = torch.tensor(
+            sorted(free_before), dtype=torch.int64)
+
+        def _finish_cycle(n_tokens):
+            self._prefill(0, 0, n_tokens)
+            self.tier.forget_row(0)
+            self.allocator.free(
+                self.table[0, :n_tokens].long().clone())
+            self.table[0, :4096] = 0
+
+        _finish_cycle(1024)
+        _finish_cycle(1152)
+        self.assertIn(orphan, set(self.allocator.free_pages.tolist()))
+        self.assertGreaterEqual(
+            self.tier.counters.get("orphan_reclaimed", 0), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

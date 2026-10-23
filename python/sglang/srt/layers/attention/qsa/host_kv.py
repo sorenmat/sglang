@@ -123,6 +123,9 @@ class HostKVTier:
         self.sink_page: Optional[int] = None
         self.tier_frames: Set[int] = set()
         self.returned_tokens = 0
+        # HKV-27 orphan sweeper: pages unreferenced across two
+        # consecutive forgets (see forget_row).
+        self._prev_orphans = None
         # Wrapped allocator originals for the accounting mode.
         self._orig_free: Any = None
         self._orig_free_seg: Any = None
@@ -136,6 +139,7 @@ class HostKVTier:
         self._auto_pending = False
         self._backend = None
         self._last_key: Any = None
+        self._last_batch: Any = None
         # Counters.
         self.counters: Dict[str, Any] = {
             "staged_pages": 0, "verify_mismatches": 0,
@@ -281,6 +285,28 @@ class HostKVTier:
         allocator.free = _filtered_free
         allocator.free_segment = _filtered_free_seg
 
+        # HKV-27 attribution: pages leave the free list only through
+        # alloc/alloc_extend/alloc_decode. Count pages per call site so
+        # orphaned pages (in no ledger, no table row) can be attributed.
+        for name in ("alloc", "alloc_extend", "alloc_decode"):
+            orig = getattr(allocator, name, None)
+            if orig is None:
+                continue
+
+            def _wrap(n, _orig=orig, _self=self):
+                def _call(*a, **kw):
+                    out = _orig(*a, **kw)
+                    try:
+                        if out is not None and hasattr(out, "numel"):
+                            _self.counters["allocattr_" + n] = \
+                                _self.counters.get("allocattr_" + n, 0) \
+                                + int(out.numel())
+                    except Exception:
+                        pass
+                    return out
+                return _call
+            setattr(allocator, name, _wrap(name))
+
     def _reserve_frames(self) -> Set[int]:
         if self.reserve is None:
             return set()
@@ -406,8 +432,17 @@ class HostKVTier:
         rows = getattr(forward_batch, "req_pool_indices", None)
         if rows is None or rows.numel() == 0:
             return
-        # Dedupe by content, globally: one forward serves all layers and
-        # the same (first-slot, size) recurs per layer.
+        # Dedupe per forward, not globally: one forward serves all
+        # layers and the same (first-slot, size) recurs per layer, but
+        # every forward gets a fresh forward_batch. A key-only guard
+        # leaked across forwards: a new request landing on its own
+        # recycled pages produced the identical key and the tier
+        # silently dropped its first chunk (rows[0] never re-created
+        # after forget). Holding the batch reference also pins it
+        # against id-reuse ABA.
+        if forward_batch is not self._last_batch:
+            self._last_batch = forward_batch
+            self._last_key = None
         key = (int(out_locs[0].item()), int(out_locs.numel()))
         if key == self._last_key:
             return
@@ -976,20 +1011,63 @@ class HostKVTier:
         self.counters["runtime_frames_returned"] = \
             self.counters.get("runtime_frames_returned", 0) \
             + len(runtime_origin)
+        # HKV-27: the runtime's release paths are all table-read
+        # based; pages allocated for the final verify/draft tail that
+        # were never table-written are unreachable to them (in no
+        # ledger, referenced by no row) and orphan permanently - the
+        # residual ~2 pages/finish leak. Sweep them back into the
+        # allocator: a page in NEITHER ledger, no tier row, and no
+        # table row across TWO consecutive forgets is garbage with
+        # certainty (any live owner reaches its page via one of
+        # those; an in-flight verify slot is referenced by the next
+        # forget's scan). Not gated on stats_path: the sweep is the
+        # fix, not instrumentation.
+        try:
+            free_pages = set(self.allocator.free_pages.tolist())
+            reserve_pages = set(self.reserve.tolist()) \
+                if self.reserve is not None else set()
+            n_pool = self._orig_size // _PAGE + 1
+            row_held = set()
+            for st in self.rows.values():
+                for p in (st.get("restored", set())
+                          | st.get("prefetched", set())):
+                    slots = st["page_slots"].get(p)
+                    if slots is not None and int(slots.numel()):
+                        row_held.add(int(slots[0].item()) // _PAGE)
+            orphans = (set(range(n_pool)) - free_pages - reserve_pages
+                       - row_held - {0})
+            if orphans and self.table is not None:
+                tab = self.table
+                for row_i in range(tab.shape[0]):
+                    referenced = set(
+                        (tab[row_i].long() // _PAGE).unique().tolist())
+                    orphans -= referenced
+            stable = orphans & self._prev_orphans \
+                if self._prev_orphans is not None else set()
+            reclaimed = 0
+            if stable:
+                slots = torch.tensor(
+                    [f * _PAGE for f in sorted(stable)],
+                    dtype=self.allocator.free_pages.dtype,
+                    device=self.allocator.free_pages.device)
+                reclaimed = self._dedup_free(slots)
+            self.counters["orphan_pending"] = len(orphans)
+            self.counters["orphan_reclaimed"] = \
+                self.counters.get("orphan_reclaimed", 0) + reclaimed
+            self._prev_orphans = orphans
+            _log(
+                f"forget#{self.counters['forgotten_rows']}: "
+                f"alloc_free={self.allocator.available_size()} "
+                f"reserve={self.reserve_tokens} "
+                f"tier_frames={len(self.tier_frames)} "
+                f"rows={len(self.rows)} "
+                f"orphans={len(orphans)} "
+                f"swept={reclaimed} "
+                f"orphan_reclaimed_total="
+                f"{self.counters['orphan_reclaimed']}")
+        except Exception as e:
+            _log(f"forget# orphan sweep failed: {type(e).__name__} {e}")
         if self.cfg.stats_path:
-            # HKV-27 instrumentation: per-finish ledger snapshot. The
-            # free+reserve SUM must stay flat across finishes; a falling
-            # sum means frames vanish from both ledgers (runtime path),
-            # a falling free alone means frames migrate into the reserve.
-            try:
-                _log(
-                    f"forget#{self.counters['forgotten_rows']}: "
-                    f"alloc_free={self.allocator.available_size()} "
-                    f"reserve={self.reserve_tokens} "
-                    f"tier_frames={len(self.tier_frames)} "
-                    f"rows={len(self.rows)}")
-            except Exception:
-                pass
             self.dump_stats()
 
     def scheduler_tick(self, model_worker: Any) -> None:
