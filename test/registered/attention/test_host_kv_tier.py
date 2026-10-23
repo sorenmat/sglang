@@ -341,6 +341,162 @@ class HostKVFixtures(unittest.TestCase):
             self.assertIn("coverage_misses", d)
 
 
+class FaithfulSegmentAllocator(FakeAllocator):
+    """Mimics PagedTokenToKVPoolAllocator exactly where the tier's wraps
+    touch it: free() pushes unique page ids of the given slots WITHOUT
+    deduping against the existing free list, and free_segment() recovers
+    page ids from stride slices (valid only on unmasked segments)."""
+
+    def free(self, free_index):
+        if free_index.numel() == 0:
+            return
+        pages = torch.unique(free_index.to(torch.int64) // PAGE)
+        self.free_pages = torch.cat((pages, self.free_pages))
+
+    def free_segment(self, free_index, *, start_pos):
+        if free_index.numel() == 0:
+            return
+        ps = PAGE
+        offset = start_pos % ps
+        if offset == 0:
+            pieces = (free_index[::ps],)
+        else:
+            pieces = (free_index[:1], free_index[ps - offset::ps])
+        self.free_pages = torch.cat(
+            (*(p // ps for p in pieces), self.free_pages))
+
+
+class FreeSegmentContamination(unittest.TestCase):
+    """HKV-27 hardening lock: a tier-contaminated segment (zeroed retired
+    slots, staged tier frames) must flow through the free_segment wrap
+    page-exactly. Contamination is always page-granular in practice, which
+    preserves the stride-slice alignment - this test pins that the wrap
+    frees exactly the runtime pages, keeps tier frames out of the
+    allocator ledger, and never duplicates a page id, whatever path it
+    takes internally."""
+
+    def setUp(self):
+        self.tier, self.cfg = fresh_tier()
+        self.pool = FakePool(slots=PAGE * 260)
+        self.allocator = FaithfulSegmentAllocator(pages=259)
+        self.tree = FakeTreeCache()
+        self.table = torch.zeros(4, 8192, dtype=torch.int32)
+        self.reqs = {0: FakeReq(0)}
+        self.scheduler = FakeScheduler(list(self.reqs.values()), self.tree)
+        self.backend = FakeBackend(self.pool, self.allocator,
+                                   self.scheduler, self.table)
+        self.tier.arm(self.backend, 0)
+        self.next_page = 1
+
+    def _alloc(self, n):
+        pages = self.allocator.free_pages[:n].to(torch.int64).tolist()
+        self.allocator.free_pages = self.allocator.free_pages[n:]
+        return pages
+
+    def _prefill(self, row, start, n):
+        # Chunked like the runtime: frames recycle through retire as the
+        # context streams past the kept budget.
+        pos = start
+        while pos < start + n:
+            chunk = min(512, start + n - pos)
+            pages = self._alloc((chunk + PAGE - 1) // PAGE)
+            locs = (torch.tensor(pages)[:, None] * PAGE
+                    + torch.arange(PAGE)[None, :]).flatten()[:chunk]
+            self.table[row, pos:pos + chunk] = locs.to(torch.int32)
+            pos += chunk
+            self.reqs[row].kv.kv_allocated_len = pos
+            self.tier.after_write(FakeBatch([row], locs,
+                                            seq_lens=torch.tensor([pos])))
+            self.tier._retire(row, self.tier.rows[row], pos)
+
+    def test_contaminated_segment_frees_exact_pages(self):
+        self._prefill(0, 0, 4096)
+        st = self.tier.rows[0]
+        # Restore one retired page so the row holds a staged TIER frame
+        # and the table carries live staged slots; other retired pages
+        # read as slot 0 after retirement zeroing.
+        page = sorted(st["retired"])[0]
+        positions = torch.tensor(
+            [page * PAGE + j for j in range(0, PAGE, 16)])
+        self.tier.before_gather(positions,
+                                FakeBatch([0], torch.tensor([0])))
+        self.assertIn(page, st["restored"])
+        # The segment the runtime frees at finish: full extent,
+        # contaminated with zeros and one tier frame.
+        extent = self.table[0, :4096].long().clone()
+        zeroed = int((extent == 0).sum())
+        self.assertGreater(zeroed, PAGE)
+        tier_held = len(st["restored"]) + len(st["prefetched"])
+        expect_free_pages = set(self.allocator.free_pages.tolist())
+        for p in range(0, 4096 // PAGE):
+            slots = extent[p * PAGE:(p + 1) * PAGE]
+            frame = int(slots[0].item()) // PAGE
+            if frame == 0 or p == page:
+                continue  # zeroed retired page or the staged tier page
+            expect_free_pages.add(frame)
+        before_free = int(self.allocator.free_pages.numel())
+        self.allocator.free_segment(extent, start_pos=0)
+        after = self.allocator.free_pages.tolist()
+        # No page may double-enter the free list (silent cross-request
+        # frame sharing downstream).
+        self.assertEqual(len(after), len(set(after)),
+                         f"duplicate page ids in free list: "
+                         f"{sorted({x for x in after if after.count(x) > 1})}")
+        self.assertEqual(set(after), expect_free_pages)
+        # No tier frame leaked into the allocator's ledger.
+        overlap = set(after) & set(self.tier.reserve.tolist())
+        self.assertFalse(overlap, f"tier frames in free list: {overlap}")
+        staged = int(st["page_slots"][page][0].item()) // PAGE
+        self.assertNotIn(staged, after)
+        # And the tier still owns its staged frame for the row.
+        self.assertEqual(len(st["restored"]) + len(st["prefetched"]),
+                         tier_held)
+        self.assertGreater(int(self.allocator.free_pages.numel()),
+                           before_free)
+
+    def test_finish_cycles_conserve_exactly(self):
+        """HKV-27: full request lifetimes (chunked prefill with retire,
+        restore + prefetch, decode growth, forget, full-extent finish
+        free) must conserve the frame ledger EXACTLY, cycle after cycle -
+        no drift is acceptable, however small."""
+        keep = int(self.tier.cfg.keep_pages)
+        baseline = (int(self.allocator.free_pages.numel())
+                    + int(self.tier.reserve.numel()))
+        for cycle in range(40):
+            self._prefill(0, 0, 4096)
+            st = self.tier.rows[0]
+            retired_sorted = sorted(st["retired"])
+            if retired_sorted:
+                positions = torch.tensor(
+                    [p * PAGE + j for p in retired_sorted[:3]
+                     for j in range(0, PAGE, 16)])
+                self.tier.before_gather(
+                    positions, FakeBatch([0], torch.tensor([0])))
+            dec_pages = self._alloc(3)
+            dec_locs = (torch.tensor(dec_pages)[:, None] * PAGE
+                        + torch.arange(PAGE)[None, :]).flatten()
+            self.table[0, 4096:4096 + len(dec_locs)] = \
+                dec_locs.to(torch.int32)
+            self.tier.after_write(FakeBatch(
+                [0], dec_locs,
+                seq_lens=torch.tensor([4096 + len(dec_locs)])))
+            extent = self.table[0, :4096 + len(dec_locs)].long().clone()
+            self.tier.forget_row(0)
+            self.allocator.free(extent)
+            self.table[0, :4096 + len(dec_locs)] = 0
+            held = sum(len(st2["restored"]) + len(st2["prefetched"])
+                       for st2 in self.tier.rows.values())
+            total = (int(self.allocator.free_pages.numel())
+                     + int(self.tier.reserve.numel()) + held)
+            self.assertEqual(
+                total, baseline,
+                f"cycle {cycle}: ledger drifted by {total - baseline} "
+                f"frames (free={int(self.allocator.free_pages.numel())} "
+                f"reserve={int(self.tier.reserve.numel())} held={held})")
+            self.assertLessEqual(
+                int(self.allocator.free_pages.numel()), keep)
+
+
 if __name__ == "__main__":
     unittest.main()
 

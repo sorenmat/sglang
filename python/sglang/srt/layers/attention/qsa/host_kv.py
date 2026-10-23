@@ -268,10 +268,15 @@ class HostKVTier:
 
         def _filtered_free_seg(free_index, *, start_pos,
                                _orig=self._orig_free_seg, _self=self):
-            keep = _self._dedup_filter(free_index)
-            if int(keep.numel()) == 0:
-                return None
-            return _orig(keep, start_pos=start_pos)
+            # Defensive hardening: free_segment() recovers page ids from
+            # STRIDE SLICES of the slot array, whose correctness relies on
+            # the caller's segment shape. The tier only ever drops WHOLE
+            # pages here (zeroed retired pages and staged tier frames are
+            # page-granular), which happens to preserve that alignment -
+            # but that is an invariant of every current drop site, not of
+            # the interface. Route through the page-exact unique() path,
+            # which no mask can break, at no measurable finish-path cost.
+            return _self._filtered_free(free_index, _self._orig_free)
 
         allocator.free = _filtered_free
         allocator.free_segment = _filtered_free_seg
@@ -972,6 +977,19 @@ class HostKVTier:
             self.counters.get("runtime_frames_returned", 0) \
             + len(runtime_origin)
         if self.cfg.stats_path:
+            # HKV-27 instrumentation: per-finish ledger snapshot. The
+            # free+reserve SUM must stay flat across finishes; a falling
+            # sum means frames vanish from both ledgers (runtime path),
+            # a falling free alone means frames migrate into the reserve.
+            try:
+                _log(
+                    f"forget#{self.counters['forgotten_rows']}: "
+                    f"alloc_free={self.allocator.available_size()} "
+                    f"reserve={self.reserve_tokens} "
+                    f"tier_frames={len(self.tier_frames)} "
+                    f"rows={len(self.rows)}")
+            except Exception:
+                pass
             self.dump_stats()
 
     def scheduler_tick(self, model_worker: Any) -> None:
