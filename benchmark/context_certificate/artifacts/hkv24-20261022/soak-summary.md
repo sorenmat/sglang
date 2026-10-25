@@ -48,5 +48,10 @@ trigger. The tier itself never misbehaved in either window.
 zero scheduler exceptions, zero starved restores, zero KV checksum
 mismatches, bounded deterministic finish budget, and full recovery from both
 recycle races. The tier is stable under its documented operational model
-(scheduled recycle); the residual finish-path leak remains the single open
+(scheduled recycle); the residual finish-path leak remained the single open
 engineering item (HKV-26 follow-on).
+
+> Postscript 2026-10-23: the finish-path leak is fixed (HKV-27, commit
+> `a1f87403f8`); 45 finishes validated on one server life with a flat
+> ledger. The recycles this soak exercised are no longer required —
+> see `../hkv27-20261023/`.

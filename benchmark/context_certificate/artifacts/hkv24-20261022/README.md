@@ -38,7 +38,9 @@ Wait for `hostkv image OK` + `The server is fired up and ready to roll!` in the 
 
 - Health: `curl -s localhost:30000/health | jq .health` (or `/get_server_info`).
 - Tier counters: the server logs periodic tier stats; key fields:
-  - `forgotten_rows` — completed requests reaped. **Alert > 30** → recycle (§2.3).
+  - `forgotten_rows` — completed requests reaped. No longer budget-capped
+    (HKV-27 fixed the finish-path leak; 45 finishes validated on one server
+    life). Keep **alert > 30** as a safety net → recycle (§2.3).
   - `restore_starved` — restores that found no free GPU frame. **Must stay 0.**
   - `verify_mismatches` — GPU/host KV checksum drift on sampled rows. **Must stay 0.**
   - `coverage_misses` — sparse-index stash lookups that missed (expected,
@@ -46,9 +48,13 @@ Wait for `hostkv image OK` + `The server is fired up and ready to roll!` in the 
     into the millions — that was the HKV-25 failure signature).
 - Exceptions: `grep -c "Scheduler hit an exception"` in the server log — **must stay 0.**
 
-### 2.3 Recycle (the operational answer to the finish-path leak)
+### 2.3 Recycle (safety net — the finish-path leak it answered is fixed)
 
-When `forgotten_rows > 30` (or starved/verify go nonzero — fail fast):
+HKV-27 (commit `a1f87403f8`, artifacts/hkv27-20261023) eliminated the
+~2-pages-per-finish orphan leak: 45 sequential 101k finishes on one server
+life, flat ledger, no admission stall. Recycle is no longer required at
+cadence; keep the procedure as a defensive action if `forgotten_rows > 30`
+still fires (leak-class regression) or starved/verify go nonzero (fail fast):
 
 ```bash
 # stop old server, start a fresh one on the same port, keep the name
@@ -76,11 +82,14 @@ GPU instances are spot; ALWAYS delete when done (GPU_HOST_POLICY.md).
 
 ## 3. Known limitations
 
-1. **Per-server finish budget (~31 finishes at keep=1700).** The residual
-   finish-path leak (HKV-26 root cause fixed; a small residual ~180 tokens of
-   headroom lost per completed request remains) caps a tier server at ~31
-   completed 101k-class requests before intake headroom is exhausted.
-   Mitigation: scheduled recycle (§2.3). Follow-up ticket for the residual.
+1. **Per-server finish budget — RESOLVED (HKV-27).** The residual
+   finish-path leak (verify/draft-tail pages allocated but never
+   table-written, unreachable to every table-read-based release path) is
+   fixed by the forget_row orphan sweeper + the per-forward after_write
+   dedupe (commit `a1f87403f8`). Validated: 45 sequential 101k finishes on
+   one server life, flat `alloc_free` (was −128 tokens/finish), no admission
+   stall, counters clean. The §2.3 recycle is now a safety net, not a
+   requirement. Evidence: `../hkv27-20261023/`.
 2. **160k-class workloads: vanilla is the right choice today.** On this card
    (96 GB, ~80.5 GB weights → ~200–211k-token KV pool) 160k inputs fit without
    the tier, and vanilla is measurably faster there (no retire/restore traffic).
